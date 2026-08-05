@@ -1,0 +1,9 @@
+{
+  "name": "rag-projects",
+  "version": "2.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "python run_dev.py",
+    "start": "start.cmd"
+  }
+}

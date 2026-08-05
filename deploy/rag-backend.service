@@ -1,0 +1,44 @@
+# systemd unit — backend RAG (FastAPI + ChromaDB + MiniLM, satu proses).
+# Dipasang oleh deploy/install_lxc.sh ke /etc/systemd/system/rag-backend.service
+#
+# TUNING MEMORY:
+#   MemoryMax=1536M disesuaikan dengan budget RAM LXC 2-3 GB
+#   (idle <500 MB, saat query ~1 GB karena model embedding MiniLM di-load
+#   in-process bersama ChromaDB). Kalau LXC diberi RAM lebih (mis. 4 GB),
+#   naikkan nilai ini (mis. 2560M) lalu:
+#       systemctl daemon-reload && systemctl restart rag-backend
+#   Service yang kena OOM-kill terlihat di journalctl (cari "oom"/"Killed").
+#
+# DIREKTORI TULIS:
+#   ProtectSystem=strict membuat /opt/rag read-only bagi service, kecuali
+#   path yang terdaftar di ReadWritePaths. Pastikan data/, uploads/, dan
+#   data/logs/ sudah ada dan writable oleh user `rag` (script install
+#   membuatnya otomatis). Kalau LOG_DIR di .env menunjuk folder lain,
+#   tambahkan folder itu ke ReadWritePaths.
+
+[Unit]
+Description=Personal RAG Knowledge Base (FastAPI + ChromaDB + MiniLM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rag
+WorkingDirectory=/opt/rag
+EnvironmentFile=/opt/rag/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rag/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+# Budget RAM LXC 2-3 GB -> batasi service di 1.5 GB (lihat komentar di atas).
+MemoryMax=1536M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/rag/data /opt/rag/uploads /opt/rag/data/logs
+PrivateTmp=true
+# SIGINT -> graceful shutdown: lifespan menutup ChromaDB rapi (store.close()).
+# Kill paksa (SIGKILL / kill -9) bisa meninggalkan lock database yang harus
+# dibersihkan manual (lihat Troubleshooting di README-DEPLOY.md).
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

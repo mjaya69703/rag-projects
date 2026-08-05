@@ -1,0 +1,22 @@
+[project]
+name = "rag-projects"
+version = "2.1.0"
+requires-python = ">=3.11"
+description = "Personal AI Knowledge Base (RAG)"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+# E402 disengaja di test: env PERSIST_DIR/UPLOAD_DIR/DB_PATH di-set SEBELUM
+# import app.main (lihat konvensi tests/).
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["E402"]

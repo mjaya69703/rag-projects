@@ -1,0 +1,5 @@
+[
+  { "date": "2026-08-06", "macrostructure": "Workbench (refined)", "theme": "Coral (token-tightened)", "enrichment": "none", "brief": "RAG SPA audit + anti-slop fixes (XSS, SVG icons, tokens)" },
+  { "date": "2026-08-03", "macrostructure": "Index-First", "theme": "Coral", "enrichment": "none", "brief": "Custom FastAPI-served RAG workspace replacing Streamlit" },
+  { "date": "2026-08-02", "macrostructure": "Workbench (chat app)", "theme": "Cobalt", "enrichment": "none", "brief": "RAG Streamlit UI — modern-minimal, light+dark toggle, SSE streaming" }
+]

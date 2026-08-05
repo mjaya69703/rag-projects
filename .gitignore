@@ -1,0 +1,35 @@
+# ====== Python ======
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ====== Env & secrets (REPO INI OPEN SOURCE — jangan pernah commit) ======
+.env
+.env.*
+!.env.example
+
+# ====== Data pribadi pengguna ======
+# PDF terindeks, ChromaDB, SQLite chat history, log — semua data lokal
+uploads/*
+!uploads/.gitkeep
+data/
+
+# ====== Database & logs ======
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+
+# ====== OS / editor ======
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ====== Tools & artifacts ======
+*.tmp
+nul
