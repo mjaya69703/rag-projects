@@ -1,63 +1,125 @@
 :root {
-  --color-paper: oklch(98% 0.005 250);
+  /* Default: Dark Mode Slate & Neon Glow theme for an ultra-premium AI Workbench */
+  --color-paper: oklch(14% 0.02 260);
+  --color-paper-raised: oklch(18% 0.025 260);
+  --color-paper-soft: oklch(22% 0.03 260);
+  --color-paper-floating: oklch(24% 0.035 260 / 0.85);
+
+  --color-ink: oklch(98% 0.005 260);
+  --color-muted: oklch(68% 0.02 260);
+  --color-subtle: oklch(45% 0.02 260);
+  --color-rule: oklch(28% 0.025 260);
+  --color-rule-light: oklch(35% 0.03 260);
+
+  /* Primary Accent: Neon Violet / Indigo */
+  --color-accent: oklch(65% 0.24 275);
+  --color-accent-hover: oklch(72% 0.26 275);
+  --color-accent-active: oklch(60% 0.24 275);
+  --color-accent-ink: oklch(98% 0.005 260);
+  --color-accent-glow: oklch(65% 0.24 275 / 0.35);
+
+  /* Secondary Accent: Electric Cyan */
+  --color-secondary: oklch(72% 0.18 195);
+  --color-secondary-glow: oklch(72% 0.18 195 / 0.3);
+
+  --color-user-bubble: oklch(24% 0.04 270);
+  --color-focus: oklch(68% 0.22 275);
+  --color-error: oklch(62% 0.22 25);
+  --color-error-bg: oklch(22% 0.08 25);
+  --color-success: oklch(68% 0.18 155);
+  --color-success-bg: oklch(22% 0.06 155);
+
+  --glass-bg: oklch(18% 0.025 260 / 0.75);
+  --glass-border: oklch(35% 0.03 260 / 0.5);
+  --glass-border-glow: oklch(65% 0.24 275 / 0.4);
+  
+  --shadow-sm: 0 2px 8px -2px oklch(0% 0 0 / 0.4);
+  --shadow-md: 0 6px 20px -4px oklch(0% 0 0 / 0.5);
+  --shadow-lg: 0 16px 48px -8px oklch(0% 0 0 / 0.7);
+  --shadow-glow: 0 0 25px -5px oklch(65% 0.24 275 / 0.4);
+
+  /* Code & Syntax */
+  --color-code-bg: oklch(11% 0.02 260);
+  --color-code-ink: oklch(92% 0.01 260);
+  --color-code-border: oklch(24% 0.03 260);
+  --backdrop: oklch(8% 0.02 260 / 0.7);
+
+  /* Modern Fonts */
+  --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-body: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'DM Mono', monospace;
+
+  /* Spacing */
+  --space-1: .25rem;
+  --space-2: .5rem;
+  --space-3: .75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.85rem;
+  --text-base: 0.95rem;
+  --text-lg: 1.15rem;
+  --text-xl: clamp(1.5rem, 2.5vw, 2.2rem);
+
+  --dur-fast: 140ms;
+  --dur-base: 220ms;
+  --dur-slow: 350ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1.1rem;
+  --radius-xl: 1.5rem;
+  --radius-pill: 9999px;
+  --rule: 1px;
+}
+
+[data-theme="light"] {
+  --color-paper: oklch(98% 0.005 260);
   --color-paper-raised: oklch(100% 0 0);
-  --color-paper-soft: oklch(95% 0.008 250);
-  --color-ink: oklch(18% 0.025 250);
-  --color-muted: oklch(48% 0.02 250);
-  --color-rule: oklch(89% 0.01 250);
-  --color-accent: oklch(55% 0.19 252);
-  --color-accent-hover: oklch(50% 0.21 252);
-  --color-accent-ink: oklch(99% 0.004 250);
-  --color-user-bubble: oklch(94% 0.025 250);
-  --color-focus: oklch(55% 0.19 252);
-  --color-error: oklch(55% 0.2 25);
-  --color-success: oklch(52% 0.15 150);
+  --color-paper-soft: oklch(94% 0.01 260);
+  --color-paper-floating: oklch(100% 0 0 / 0.9);
 
-  --glass-bg: oklch(100% 0 0 / 0.75);
-  --glass-border: oklch(88% 0.01 250 / 0.8);
-  --shadow-sm: 0 2px 8px -2px oklch(20% 0.02 250 / 0.06);
-  --shadow-lg: 0 12px 32px -4px oklch(20% 0.02 250 / 0.12);
+  --color-ink: oklch(16% 0.03 260);
+  --color-muted: oklch(46% 0.02 260);
+  --color-subtle: oklch(65% 0.02 260);
+  --color-rule: oklch(88% 0.015 260);
+  --color-rule-light: oklch(82% 0.02 260);
 
-  /* Kode & modal — blok kode tetap gelap di kedua tema */
-  --color-code-bg: oklch(16% 0.02 250);
-  --color-code-ink: oklch(95% 0.01 250);
-  --color-code-border: oklch(28% 0.02 250);
-  --backdrop: oklch(0% 0 0 / 0.4);
+  --color-accent: oklch(58% 0.22 275);
+  --color-accent-hover: oklch(52% 0.24 275);
+  --color-accent-active: oklch(46% 0.24 275);
+  --color-accent-ink: oklch(100% 0 0);
+  --color-accent-glow: oklch(58% 0.22 275 / 0.25);
 
-  --font-display: "Manrope", system-ui, sans-serif;
-  --font-body: "Manrope", system-ui, sans-serif;
-  --font-mono: "DM Mono", ui-monospace, monospace;
+  --color-secondary: oklch(58% 0.16 195);
+  --color-secondary-glow: oklch(58% 0.16 195 / 0.2);
 
-  --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem; --space-5: 1.25rem; --space-6: 1.5rem; --space-8: 2rem; --space-10: 2.5rem; --space-12: 3rem;
-  --text-xs: .72rem; --text-sm: .84rem; --text-base: .96rem; --text-lg: 1.2rem; --text-xl: clamp(1.65rem, 3vw, 2.4rem);
+  --color-user-bubble: oklch(93% 0.02 270);
+  --color-focus: oklch(58% 0.22 275);
+  --color-error: oklch(56% 0.22 25);
+  --color-error-bg: oklch(95% 0.03 25);
+  --color-success: oklch(52% 0.16 155);
+  --color-success-bg: oklch(94% 0.03 155);
 
-  --dur-fast: 120ms; --dur-base: 180ms; --ease-out: cubic-bezier(.2,.7,.2,1); --ease-in: cubic-bezier(.6,0,.8,.3); --ease-in-out: cubic-bezier(.4,0,.2,1);
-  --radius-sm: .5rem; --radius-md: .8rem; --radius-lg: 1.1rem; --radius-xl: 1.5rem; --radius-pill: 9999px; --rule: 1px;
+  --glass-bg: oklch(100% 0 0 / 0.8);
+  --glass-border: oklch(88% 0.015 260 / 0.7);
+  --glass-border-glow: oklch(58% 0.22 275 / 0.3);
+
+  --shadow-sm: 0 2px 8px -2px oklch(20% 0.02 260 / 0.06);
+  --shadow-md: 0 6px 20px -4px oklch(20% 0.02 260 / 0.1);
+  --shadow-lg: 0 16px 48px -8px oklch(20% 0.02 260 / 0.15);
+  --shadow-glow: 0 0 25px -5px oklch(58% 0.22 275 / 0.25);
+
+  --color-code-bg: oklch(16% 0.02 260);
+  --color-code-ink: oklch(95% 0.01 260);
+  --color-code-border: oklch(28% 0.02 260);
+  --backdrop: oklch(0% 0 0 / 0.35);
 }
 
-[data-theme="dark"] {
-  --color-paper: oklch(14% 0.015 250);
-  --color-paper-raised: oklch(18% 0.018 250);
-  --color-paper-soft: oklch(22% 0.02 250);
-  --color-ink: oklch(96% 0.01 250);
-  --color-muted: oklch(68% 0.02 250);
-  --color-rule: oklch(28% 0.02 250);
-  --color-accent: oklch(65% 0.2 252);
-  --color-accent-hover: oklch(70% 0.22 252);
-  --color-accent-ink: oklch(14% 0.02 250);
-  --color-user-bubble: oklch(22% 0.03 250);
-  --color-focus: oklch(65% 0.2 252);
-  --color-error: oklch(65% 0.2 25);
-  --color-success: oklch(62% 0.15 150);
-
-  --glass-bg: oklch(18% 0.018 250 / 0.75);
-  --glass-border: oklch(32% 0.02 250 / 0.6);
-  --shadow-sm: 0 2px 8px -2px oklch(0% 0 0 / 0.3);
-  --shadow-lg: 0 16px 40px -8px oklch(0% 0 0 / 0.5);
-
-  /* Blok kode tetap gelap; backdrop lebih pekat di malam hari */
-  --color-code-bg: oklch(16% 0.02 250);
-  --color-code-ink: oklch(95% 0.01 250);
-  --color-code-border: oklch(28% 0.02 250);
-  --backdrop: oklch(0% 0 0 / 0.6);
-}

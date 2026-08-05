@@ -30,10 +30,10 @@ function setStatus(ok, label) {
 }
 
 function setTheme() {
-  const dark = document.documentElement.dataset.theme === 'dark';
-  document.documentElement.dataset.theme = dark ? '' : 'dark';
-  localStorage.setItem('kb-theme', dark ? 'light' : 'dark');
-  showToast(dark ? 'Tampilan terang aktif.' : 'Tampilan gelap aktif.');
+  const isLight = document.documentElement.dataset.theme === 'light';
+  document.documentElement.dataset.theme = isLight ? '' : 'light';
+  localStorage.setItem('kb-theme', isLight ? 'dark' : 'light');
+  showToast(isLight ? 'Tampilan gelap aktif.' : 'Tampilan terang aktif.');
 }
 
 // Ikon SVG — satu sistem stroke currentColor (defs ada di index.html)
@@ -565,7 +565,7 @@ function wireEvents() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.documentElement.dataset.theme = localStorage.getItem('kb-theme') === 'dark' ? 'dark' : '';
+  document.documentElement.dataset.theme = localStorage.getItem('kb-theme') === 'light' ? 'light' : '';
   wireEvents();
   loadBootstrap();
 });
