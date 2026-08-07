@@ -1,38 +1,33 @@
 # 00 — Project Overview
 
 ## Apa ini
-**Personal AI Knowledge Base (RAG)** — sistem tanya-jawab dari dokumen PDF pribadi
-(materi kuliah, presentasi kantor). Embedding lokal, LLM API eksternal, dioptimasi
-untuk environment terbatas (LXC 2-3GB RAM). Bahasa: Indonesia + Inggris.
+**Personal AI Knowledge Base (RAG)** — sistem tanya-jawab dari dokumen pribadi (PDF, MD, TXT, DOCX, PPTX, HTML, URL). Embedding lokal (MiniLM), LLM API eksternal, dioptimasi untuk environment terbatas (LXC 2-3GB RAM). Bahasa: Indonesia + Inggris.
 
-## Status sprint (per 06-08-2026)
+## Status sprint (per 07-08-2026)
 | Sprint | Fokus | Status |
 |--------|-------|--------|
-| 1 | PDF Ingestion (PyMuPDF + chunking + ChromaDB) | ✅ |
-| 2 | Query & LLM (RAG engine) | ✅ |
-| 3 | Semantic Cache | ✅ |
-| 4 | FastAPI Backend (+ session management API) | ✅ |
-| 5 | Custom Frontend (SPA statis, FastAPI-served) | ✅ |
-| 6 | Deployment & Security (Cloudflare Tunnel) | 🔶 artefak siap di `deploy/` (06-08-2026), deploy nyata menyusul |
+| 1 | Ingestion (PyMuPDF + docx/pptx + chunking + ChromaDB) | ✅ |
+| 2 | Query & LLM (RAG engine + hybrid search BM25) | ✅ |
+| 3 | Semantic Cache Aware Filter & Relevance Floor | ✅ |
+| 4 | FastAPI Backend (+ session management API + SQLite) | ✅ |
+| 5 | Custom Frontend (SPA React 19 + Vite + Bun, disajikan FastAPI) | ✅ |
+| 6 | Deployment & Security (Cloudflare Tunnel) | 🔶 artefak siap di `deploy/`, deploy nyata menyusul |
+| 7 | Learning loop (15 fitur), custom modals 100%, loading indicators | ✅ selesai 100% |
 
-06-08-2026: hardening keamanan (semantic cache aware filter dokumen, validasi PDF asli,
-CORS eksplisit, rate limit, observability) + audit desain frontend (Hallmark) + pin dependency.
-
-## Fitur utama
-- Upload PDF → smart chunking berbasis heading → embedding lokal → ChromaDB
-- Tanya-jawab dengan source citation (file, halaman, heading)
-- Semantic cache (pertanyaan identik/parafrase → tanpa call LLM)
-- Multi-session chat persistent (SQLite): sliding window / summary mode
-- Auto-title session, auto-summary tiap 10 pesan, warning token >4000
-
-## Dokumentasi sumber
-Spesifikasi & roadmap asli ada di `docs/`:
-`01_PRD.md`, `02_GOALS_AND_SCOPE.md`, `03_TECHNICAL_SPECIFICATION.md`,
-`04_ARCHITECTURE_AND_WORKFLOW.md`, `05_DEVELOPMENT_FLOW.md`, `06_ROADMAP.md`,
-`07_TESTING_AND_QA.md`, `README.md` (arsip v1).
+## Fitur Utama Sistem
+- **Multi-Format Ingest**: PDF, MD, TXT, DOCX, PPTX, HTML, URL, & Watch-Folder auto-index (`uploads/`).
+- **Hybrid Search**: BM25 keyword matching + ChromaDB vector similarity.
+- **RAG Engine + SSE Streaming**: Jawaban cepat dengan rujukan sumber (file, halaman, heading).
+- **Semantic Cache & Relevance Floor**: Menolak menjawab jika materi tidak relevan (`RAG_MIN_SIMILARITY`).
+- **React 19 SPA Frontend**: Modern OKLCH Glassmorphism, 100% custom React modals (`ConfirmDialog`, `PromptDialog`), serta indikator loading & spinner visual.
+- **15 Fitur Learning Loop**:
+  - Library Dokumen & Chunk Inspector (dengan catatan anotasi)
+  - Quiz Generator Interaktif (opsi A/B/C/D, koreksi + penjelasan LLM, riwayat skor)
+  - Flashcards 3D (3D card flip, mastery progress, navigasi keyboard)
+  - Progress Analytics Dashboard (KPI stat, cakupan dokumen per bab, weak spot matrix)
+  - Spaced Repetition Review queue & Termometer pertanyaan berulang
+- **Access Layers**: MCP Server (`python -m app.mcp_server`) & Bot Telegram (`python -m app.telegram_bot`).
 
 ## Environment
-- OS dev: **Windows** (cmd.exe). Target deploy: Ubuntu/Debian LXC.
-- Python 3.13 di mesin ini (catatan 02-08-2026: handover lama bilang 3.14, tapi PC
-  ini cuma ada 3.13 — venv direbuild dengan 3.13, lihat `01_TECH_STACK.md`).
-- Semua dependency versi terbaru (lihat `01_TECH_STACK.md`).
+- OS dev: **Windows** (powershell/cmd). Target deploy: Ubuntu/Debian LXC.
+- Python 3.13 backend, Bun untuk frontend React build (`bun run build`).

@@ -1,28 +1,43 @@
-# Custom Frontend Handover
+# Custom Frontend Handover (React 19 + Vite + Bun)
 
-Updated 2026-08-03.
+Updated 07-08-2026.
 
-The Streamlit frontend has been replaced by a custom static web application.
-FastAPI serves `app/static/index.html` from `/`; keep `app.mount("/", StaticFiles(...))`
-at the bottom of `app/main.py` so API routes retain priority.
+Frontend aplikasi Knowledge Base ini adalah Single Page Application (SPA) berbasis **React 19 + Vite + React Router** yang dikelola menggunakan **Bun**.
 
-Frontend files:
+## Alur Build & Serving
 
-- `app/static/index.html`: semantic shell, dialogs, and accessible controls.
-- `app/static/tokens.css`: shared OKLCH design tokens and dark-theme overrides.
-- `app/static/styles.css`: responsive workspace layout.
-- `app/static/app.js`: session/document management and SSE client for `/query/stream`.
+1. Source code frontend berada di folder `frontend/`.
+2. Hasil build di-output ke `app/static/` via Vite (`outDir: '../app/static'`).
+3. Backend FastAPI (`app/main.py`) menyajikan file statis dari `app/static/` di route `/` dan menangani SPA fallback (semua route non-API dialihkan ke `index.html`).
 
-No Node build or extra frontend server is required. Run one process:
+## Perintah Build Wajib
 
 ```cmd
-.venv\Scripts\python -m uvicorn app.main:app --port 8000
+cd frontend
+bun install
+
+# Development server dengan hot-reload (proxy API ke 127.0.0.1:8000):
+bun run dev
+
+# Production build ke app/static/:
+bun run build
 ```
 
-Open `http://127.0.0.1:8000`. The key smoke test is
-`.venv\Scripts\python -m pytest tests\test_frontend.py -q`.
+## Struktur Halaman Frontend (`frontend/src/pages/`)
 
-The interface depends on the existing API contracts: sessions CRUD, documents CRUD,
-`/upload`, and SSE `/query/stream`. Preserve those response shapes when changing the
-backend. The command palette is `Ctrl/Cmd+K`; it provides new-chat, upload, and theme
-actions. The SPA automatically creates a first session only after `/health` succeeds.
+- `Chat.tsx`: Interface percakapan RAG dengan streaming SSE, empty state hero banner dengan chip contoh pertanyaan, floating composer strip (filter dokumen, mode konteks, top-k), serta typing dots indicator.
+- `Library.tsx`: Manajemen koleksi dokumen, stat KPI cards, interactive chunk inspector (dengan editor anotasi), serta hub pembelajaran.
+- `Quiz.tsx`: Pembuat soal interaktif dari dokumen, opsi pilihan ganda `A/B/C/D`, koreksi otomatis + penjelasan LLM, banner loading evaluasi AI, dan riwayat skor.
+- `Flashcards.tsx`: Stage kartu belajar 3D (*CSS 3D perspective flip*), progress penguasaan materi, dan tombol evaluasi "Belum Tahu" / "Sudah Tahu".
+- `Progress.tsx`: Learning Analytics Dashboard dengan KPI stat grid, cakupan bab per dokumen, dan matriks area lemah.
+- `Settings.tsx`: Control panel tema (Dark/Light mode), live metrik kesehatan sistem & *Semantic Cache Hit Rate*, serta perintah integrasi MCP Server & Bot Telegram.
+
+## Konvensi UI & Modals
+
+1. **100% Kustom Modal React (Tanpa Modal Bawaan Browser)**:
+   - Gunakan `<ConfirmDialog>` untuk konfirmasi hapus (menggantikan `window.confirm()`).
+   - Gunakan `<PromptDialog>` untuk input teks/catatan (menggantikan `window.prompt()`).
+   - Dilarang keras memanggil `confirm()`, `prompt()`, atau `alert()` bawaan browser.
+2. **Standard Indikator Loading**:
+   - Semua tombol async wajib menampilkan `.spinner` dan masuk ke state `disabled` saat request berjalan.
+   - Gunakan `typing-dots` pada pesan balasan assistant saat menunggu token stream pertama.

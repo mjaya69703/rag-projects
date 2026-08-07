@@ -17,6 +17,7 @@ import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
+from app.hybrid_search import HybridSearch
 from app.pdf_parser import Chunk
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,8 @@ class VectorStore:
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
+        # Index BM25 lazy untuk hybrid search; di-invalidate saat mutasi.
+        self._hybrid = HybridSearch(self)
 
     @property
     def model(self) -> SentenceTransformer:
@@ -120,6 +123,7 @@ class VectorStore:
             embeddings=embeddings,
             metadatas=metadatas,
         )
+        self._hybrid.invalidate()
         return len(ids)
 
     # ------------------------------------------------------------------
@@ -130,8 +134,19 @@ class VectorStore:
         query: str,
         top_k: int = DEFAULT_TOP_K,
         where: dict | None = None,
+        hybrid: bool = True,
     ) -> list[dict]:
-        """Cari chunk paling relevan dengan query (cosine similarity)."""
+        """Cari chunk paling relevan (hybrid BM25+vector bila tersedia).
+
+        Hybrid diutamakan: istilah eksak yang lemah di embedding tetap
+        ketemu lewat BM25. Kalau rank_bm25 tidak terinstall, fallback ke
+        vector-only (perilaku lama).
+        """
+        if hybrid:
+            results = self._hybrid.search(query, top_k=top_k, where=where)
+            if results is not None:
+                return results
+
         embedding = self._embed_query(query)
         result = self.collection.query(
             query_embeddings=[embedding],
@@ -175,6 +190,7 @@ class VectorStore:
         ids = result.get("ids") or []
         if ids:
             self.collection.delete(ids=ids)
+            self._hybrid.invalidate()
         return len(ids)
 
     def count(self) -> int:

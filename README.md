@@ -1,79 +1,88 @@
-# Personal AI Knowledge Base (RAG)
+# Personal AI Knowledge Base (RAG System)
 
-Sistem *Retrieval-Augmented Generation* (RAG) pribadi: upload PDF → tanya-jawab dengan AI berdasarkan isi dokumen, hemat token via semantic cache. Dioptimasi untuk berjalan di environment terbatas (LXC RAM 2-3GB) dengan embedding model lokal + LLM API eksternal.
+Aplikasi RAG (*Retrieval-Augmented Generation*) berbasis web untuk menyimpan dokumen pribadi (PDF, MD, TXT, DOCX, PPTX, HTML, URL) dan melakukan tanya-jawab presisi dengan AI. Dilengkapi fitur latihan soal (Quiz), flashcards 3D, tracking progress belajar, MCP Server, dan Bot Telegram.
 
 ---
 
-## 📊 Status Pengembangan (terakhir update: 06-08-2026)
+## ⚡ Cara Cepat Menjalankan Aplikasi
 
-| Sprint | Fokus | Status |
-|--------|-------|--------|
-| 1 | PDF Ingestion (parser + ChromaDB) | ✅ |
-| 2 | Query & LLM Integration (RAG engine) | ✅ |
-| 3 | Semantic Cache | ✅ |
-| 4 | FastAPI Backend (+ session management API) | ✅ |
-| 5 | Custom Frontend (SPA statis, disajikan FastAPI) | ✅ |
-| 6 | Deployment & Security (Cloudflare) | 🔶 artefak siap (`deploy/`), deploy nyata menyusul |
-
-> **Catatan:** Frontend aktual adalah **SPA statis** (`app/static/`) yang disajikan langsung oleh FastAPI
-> di `http://127.0.0.1:8000` — **bukan** Next.js dan **bukan** Streamlit (keduanya sudah tidak dipakai;
-> lihat `.agents/` untuk riwayat). Tidak ada server frontend terpisah.
-
-## 💬 Fitur Utama
-
-- Upload PDF → smart chunking berbasis heading → embedding lokal (MiniLM) → ChromaDB
-- Tanya-jawab dengan source citation (file, halaman, bagian) — markdown + code highlighting
-- **Streaming jawaban via SSE** (`/query/stream`) — persepsi latency hilang
-- Semantic cache (pertanyaan identik/parafrase → tanpa call LLM), **aware filter dokumen**
-- Multi-session chat persistent (SQLite): sliding window / summary mode, auto-title, auto-summary
-- UI: sidebar session/dokumen, command palette (`Ctrl/Cmd+K`), dark/light theme, dokumen filter, top-k
-- Rate limiting per-IP, CORS terkontrol, log ke file (opsional)
-
-## 🚀 Cara Pakai
-
-### Setup Awal
 ```cmd
-rem 1. Setup Python venv backend (Python 3.13)
-py -3.13 -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-copy .env.example .env   rem isi LLM_API_KEY / LLM_API_BASE / LLM_MODEL
-```
-
-### Menjalankan Sistem (1 Perintah)
-```cmd
+rem 1. Jalankan aplikasi (Backend FastAPI + Frontend React SPA)
 start.cmd
 ```
-*(atau via npm: `npm run dev` / python: `.venv\Scripts\python run_dev.py`)*
+> Buka browser di **`http://127.0.0.1:8000`**
 
-- Buka **UI + API** di `http://127.0.0.1:8000` — FastAPI menyajikan SPA sekaligus API
-- `run_dev.py` punya watchdog: restart otomatis jika backend crash (maks 4x gagal cepat) dan
-  peringatan RAM bila pohon proses melewati `RAG_BACKEND_RAM_LIMIT_MB` (default 2048)
-
-## 🧪 Testing
-
+### Bila ada perubahan pada kode frontend (`frontend/`):
 ```cmd
-rem Jalankan backend unit test suite (pytest)
-.venv\Scripts\python -m pytest tests\ -q
-
-rem Lint (ruff)
-.venv\Scripts\python -m ruff check .
+cd frontend
+bun install
+bun run build
 ```
 
-## 📁 Struktur Proyek
+### Menjalankan via Docker Compose:
+```bash
+docker compose up -d --build
+```
+> Buka browser di **`http://localhost:8000`**
 
-- `app/` — backend FastAPI: `pdf_parser`, `vector_store`, `llm_client`, `rag_engine`,
-  `semantic_cache`, `db` (SQLite sessions), `config` (baca env), `main` (API + CORS + rate limit)
-- `app/static/` — frontend SPA custom (index.html, tokens.css, styles.css, app.js) disajikan FastAPI
-- `deploy/` — artefak deployment LXC + Cloudflare Tunnel (systemd unit, script install, panduan)
-- `tests/` — unit & pipeline test (pytest) + benchmark/diagnostic scripts
-- `uploads/` — PDF yang diindeks
-- `data/` — ChromaDB (vektor + query cache) & `chat.db` (session history)
-- `docs/` & `.agents/` — dokumentasi spesifikasi dan handover pack
-- `ingest.py` / `ask.py` / `query.py` — CLI untuk ingestion dan query tanpa UI
+---
 
-## 🔒 Keamanan
+## 🧭 6 Halaman Utama Aplikasi
 
-- Konfigurasi LLM (API key) disimpan di `.env` — **jangan commit ke git**
-- Template tersedia di `.env.example`
-- CORS origin eksplisit via `CORS_ORIGINS`; rate limit via `RATE_LIMIT_QPM`
-- Deployment aman: bind `127.0.0.1` + Cloudflare Tunnel + Cloudflare Access (lihat `deploy/README-DEPLOY.md`)
+| Halaman | URL | Fungsi Utama |
+|---|---|---|
+| 💬 **Chat** | `/` | Tanya-jawab streaming dengan AI (SSE), rujukan sumber halaman/heading, filter dokumen, & prompt suggestion chips. |
+| 📚 **Library** | `/library` | Manajemen file dokumen terindeks, pratinjau isi chunk, editor catatan (annotations), & antrean review. |
+| 🎯 **Quiz** | `/quiz` | Pembuat soal pilihan ganda (A/B/C/D) dari materi dokumen, koreksi otomatis + penjelasan AI, & riwayat skor. |
+| 🎴 **Flashcards** | `/flashcards` | Kartu hafalan 3D (*flip card* via klik/`Spasi`), indikator penguasaan materi, & navigasi keyboard. |
+| 📊 **Progress** | `/progress` | Dashboard analitik pembelajaran (stat KPI, cakupan bab per dokumen, & matriks area lemah). |
+| ⚙️ **Settings** | `/settings` | Switcher tema (Dark Slate / Light), metrik kesehatan sistem, Semantic Cache hit rate, & integrasi MCP/Telegram. |
+
+---
+
+## 🛠️ Fitur & Arsitektur Utama (Real Codebase)
+
+### 1. Ingestion & Retrieval (`app/`)
+- **Multi-Format Parser**: PDF (`pdf_parser.py`), Markdown (`md_parser.py`), Office DOCX/PPTX/HTML (`office_parser.py`), URL Scraper (`url_parser.py`).
+- **Auto Watch-Folder**: File yang di-drop ke folder `uploads/` otomatis terindeks setiap 30 detik (`watch_folder.py`).
+- **Hybrid Search**: Penggabungan pencarian kata kunci BM25 + vektor ChromaDB (`hybrid_search.py`).
+- **Relevance Floor / Grounding**: Menolak menjawab jika skor relevansi dokumen di bawah batas (`RAG_MIN_SIMILARITY`).
+- **Semantic Cache**: Menyimpan jawaban pertanyaan identik/parafrase untuk menghemat token LLM (`semantic_cache.py`).
+
+### 2. Frontend Modern (`frontend/`)
+- **Teknologi**: React 19 + Vite + React Router SPA (dikelola **Bun**).
+- **UI Design System**: Vanilla CSS dengan OKLCH Glassmorphism, responsif, & support Dark/Light mode.
+- **100% Custom Modals**: Tanpa popup bawaan browser `confirm/prompt` (menggunakan `<ConfirmDialog>` & `<PromptDialog>`).
+- **Visual Loading Indicators**: Tombol async dilengkapi spinner `.spinner`, serta animasi titik berdenyut `.typing-dots` saat AI berpikir.
+
+### 3. Akses Eksternal Layer
+- **MCP Server** (`.venv\Scripts\python -m app.mcp_server`): Hubungkan Knowledge Base ke Claude Desktop / Cursor AI.
+- **Bot Telegram** (`.venv\Scripts\python -m app.telegram_bot`): Tanya-jawab & upload dokumen langsung dari Telegram HP.
+
+---
+
+## 🧪 Testing & Verifikasi
+
+```cmd
+rem 1. Test build frontend (Vite + Bun)
+cd frontend && bun run build
+
+rem 2. Test backend unit test suite (pytest - 106 tests passed)
+.venv\Scripts\python -m pytest tests\ -q
+```
+
+---
+
+## 📁 Struktur Folder Utama
+
+```
+rag-projects/
+├── frontend/          # React 19 SPA (pages, components, styles)
+├── app/               # FastAPI backend (parsers, RAG engine, DB, MCP, Telegram)
+├── app/static/        # Hasil build frontend (bun run build)
+├── uploads/           # Folder tempat menyimpan & watch-folder dokumen
+├── data/              # Storage ChromaDB & SQLite chat.db
+├── deploy/            # Artefak deployment LXC systemd
+├── tests/             # 106 unit & integration test files
+└── start.cmd          # Script 1-klik untuk running aplikasi
+```

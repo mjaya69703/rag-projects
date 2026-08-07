@@ -1,53 +1,19 @@
 # Roadmap
 
-> **Status 06-08-2026:** Sprint 1-5 selesai (Sprint 5 = custom SPA, bukan Streamlit — lihat
-> `docs/05_DEVELOPMENT_FLOW.md`). Sprint 6: artefak deployment siap di `deploy/`, deploy nyata
-> (cloudflared, Access policy) menunggu akses user ke LXC & Cloudflare Dashboard.
-> Backlog lain: auto top-k, slide-mode parser, model embedding alternatif, multi-user auth,
-> export/import session (lihat `.agents/07_ROADMAP.md`).
+> **Status 07-08-2026:** Sprint 1–5 & 7 selesai 100%. Frontend menggunakan **React 19 + Vite + React Router (dikelola Bun)** yang disajikan FastAPI dari `app/static/`. UI menggunakan 100% Custom React Modals (`ConfirmDialog`, `PromptDialog`), indikator loading & spinner visual, serta 15 fitur Learning Loop lengkap. Sprint 6: artefak deployment di `deploy/` siap, deploy nyata menunggu akses user ke LXC & Cloudflare.
 
-## 📅 Timeline (Estimasi: 2-3 Minggu)
+## 📅 Timeline & Milestone Real
 
-### Week 1: Core Development
-| Hari | Fokus | Output |
-|------|-------|--------|
-| Day 1-2 | Sprint 1 (PDF Ingestion) | PDF parser & ChromaDB integration |
-| Day 3-4 | Sprint 2 (Query & LLM) | RAG engine working |
-| Day 5 | Sprint 3 (Semantic Cache) | Cache system active |
+### Sprint Completed
+| Sprint | Fokus | Status | Output Real |
+|--------|-------|--------|-------------|
+| 1 | Ingestion & Smart Chunking | ✅ | PDF, MD, TXT, DOCX, PPTX, HTML, URL, Watch-folder |
+| 2 | Query & LLM | ✅ | RAG engine + Hybrid Search (BM25 + ChromaDB) |
+| 3 | Semantic Cache | ✅ | Cache aware filter dokumen & relevance floor (`RAG_MIN_SIMILARITY`) |
+| 4 | FastAPI & Sessions | ✅ | Session CRUD, SQLite persistent, auto-summary |
+| 5 | Custom SPA Frontend | ✅ | React 19 + Vite + Bun (Chat, Library, Quiz, Flashcards, Progress, Settings) |
+| 7 | Learning Loop & UI Polish | ✅ | 15 fitur pembelajaran, 100% Custom React Modals, loading indicators |
 
-### Week 2: API & UI
-| Hari | Fokus | Output |
-|------|-------|--------|
-| Day 6-7 | Sprint 4 (FastAPI) | REST API ready |
-| Day 8-9 | Sprint 5 (Streamlit) | UI complete |
-| Day 10 | Bug fixing & optimization | Stable version |
-
-### Week 3: Deployment & Polish
-| Hari | Fokus | Output |
-|------|-------|--------|
-| Day 11-12 | Sprint 6 (Deployment) | Live & accessible |
-| Day 13-14 | Testing & documentation | Production ready |
-
-## 🎯 Milestone
-
-### M1: MVP (Minimum Viable Product) - End of Week 1
-- Bisa upload PDF
-- Bisa tanya jawab
-- Basic UI (belum ada Cloudflare)
-
-### M2: Beta Release - End of Week 2
-- Full UI dengan Streamlit
-- Semantic cache active
-- API documented
-
-### M3: Production Release - End of Week 3
-- Deployed via Cloudflare Tunnel
-- Secured with Cloudflare Access
-- Auto-start service
-- Documentation complete
-
-## 📊 Key Performance Indicators (KPI)
-- **Accuracy:** >80% jawaban relevan dengan dokumen
-- **Latency:** <5 detik untuk respon pertama, <1 detik untuk cached
-- **Token Efficiency:** >30% penghematan token berkat cache
-- **Uptime:** 99% (auto-restart on failure)
+### Sprint 6 (Deployment LXC + Cloudflare) 🔶
+- Systemd unit `rag-backend.service`, `install_lxc.sh`, & `README-DEPLOY.md` di `deploy/` siap.
+- Menunggu konfig tunnel `cloudflared` di dashboard.

@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  rag-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-knowledge-base
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - PERSIST_DIR=/app/data/chroma_db
+      - UPLOAD_DIR=/app/uploads
+      - DB_PATH=/app/data/chat.db
+      - RAG_MIN_SIMILARITY=0.6
+      - RAG_BACKEND_RAM_LIMIT_MB=2048
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

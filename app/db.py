@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS session_summaries (
     last_message_index INTEGER NOT NULL,
     created_at         TEXT NOT NULL,
     FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS deleted_documents (
+    source     TEXT PRIMARY KEY,
+    deleted_at TEXT NOT NULL
 );
 """
 
@@ -179,6 +184,81 @@ def message_count(db_path: str | Path, session_id: str) -> int:
             "SELECT COUNT(*) AS c FROM messages WHERE session_id = ?", (session_id,)
         ).fetchone()
     return row["c"]
+
+
+def repeated_questions(
+    db_path: str | Path,
+    days: int = 7,
+    min_hits: int = 2,
+) -> list[dict]:
+    """Pertanyaan user yang diajukan berulang dalam N hari terakhir.
+
+    Termometer perilaku (read-only): agregasi tabel messages yang sudah
+    ada, tanpa tabel baru. Dipakai untuk memvalidasi asumsi "user sering
+    menanyakan hal yang sama" sebelum memutuskan membangun fitur review
+    / spaced repetition.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT MAX(content) AS question, COUNT(*) AS count, "
+            "MAX(created_at) AS last_asked "
+            "FROM messages "
+            "WHERE role = 'user' AND created_at >= ? "
+            "GROUP BY LOWER(TRIM(content)) HAVING COUNT(*) >= ? "
+            "ORDER BY count DESC, last_asked DESC",
+            (cutoff, min_hits),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def usage_summary(db_path: str | Path, days: int = 7) -> dict:
+    """Ringkasan pemakaian N hari terakhir — konteks baca termometer.
+
+    Memisahkan dua interpretasi list kosong: "app tidak dipakai" vs
+    "dipakai tapi tidak ada pertanyaan yang diulang".
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with _conn(db_path) as conn:
+        sessions = conn.execute(
+            "SELECT COUNT(DISTINCT session_id) AS n FROM messages "
+            "WHERE created_at >= ?",
+            (cutoff,),
+        ).fetchone()["n"]
+        questions = conn.execute(
+            "SELECT COUNT(*) AS n FROM messages "
+            "WHERE role = 'user' AND created_at >= ?",
+            (cutoff,),
+        ).fetchone()["n"]
+    return {"sessions_active": sessions, "questions": questions}
+
+
+# ----------------------------------------------------------------------
+# Dokumen yang dihapus (grounding: bedakan "dihapus" vs "tidak ada")
+# ----------------------------------------------------------------------
+def record_deleted_document(db_path: str | Path, source: str) -> None:
+    """Catat dokumen yang baru dihapus dari indeks."""
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO deleted_documents (source, deleted_at) "
+            "VALUES (?, ?)",
+            (source, _now()),
+        )
+
+
+def clear_deleted_document(db_path: str | Path, source: str) -> None:
+    """Hapus catatan deleted — dipanggil saat dokumen di-upload ulang."""
+    with _conn(db_path) as conn:
+        conn.execute("DELETE FROM deleted_documents WHERE source = ?", (source,))
+
+
+def list_deleted_documents(db_path: str | Path) -> list[dict]:
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT source, deleted_at FROM deleted_documents "
+            "ORDER BY deleted_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def estimate_tokens(db_path: str | Path, session_id: str) -> int:

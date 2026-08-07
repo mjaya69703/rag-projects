@@ -1,55 +1,47 @@
 # 02 — Architecture & Struktur
 
-## Struktur folder
+## Struktur Proyek
 ```
 rag-projects/
+├── frontend/             # React 19 + Vite + React Router SPA (dikelola Bun)
+│   ├── src/
+│   │   ├── pages/        # Chat.tsx, Library.tsx, Quiz.tsx, Flashcards.tsx, Progress.tsx, Settings.tsx
+│   │   ├── components/   # ConfirmDialog, PromptDialog, Dialog, Markdown, SourceCard, Toast, UploadDialog, Sidebar, PageHeader, Icon
+│   │   ├── context/      # SessionsContext.tsx
+│   │   └── styles/       # tokens.css, styles.css
+│   ├── package.json
+│   └── vite.config.ts    # OutDir: ../app/static, proxy API ke 127.0.0.1:8000
 ├── app/
-│   ├── __init__.py
 │   ├── pdf_parser.py     # PyMuPDF: extract_pages, parse_pdf, deteksi heading
-│   ├── vector_store.py   # ChromaDB + MiniLM; add_documents/search/list/delete/reset/close
-│   ├── llm_client.py     # OpenAI-compatible chat via httpx (LLMError)
-│   ├── rag_engine.py     # RAGEngine.query(question, top_k, where, history)
-│   ├── semantic_cache.py # SemanticCache (collection query_cache, threshold 0.25)
-│   ├── db.py             # SQLite: sessions/messages/session_summaries
-│   ├── config.py         # Baca env terpusat (Settings) — ditambahkan 06-08-2026
-│   └── main.py           # FastAPI app + lifespan + endpoint + rate limit + CORS + serve SPA
-├── tests/                # test_pipeline, test_rag, test_cache, test_api, test_db, test_frontend
-├── uploads/              # PDF yang diindeks
-├── data/                 # chroma_db/ + chat.db
-├── docs/                 # dokumentasi spesifikasi
-├── .agents/              # handover pack ini
-├── app/static/           # Custom SPA (index.html, tokens.css, styles.css, app.js) — disajikan FastAPI di "/" (mount terakhir)
-├── deploy/               # Artefak deployment LXC + Cloudflare Tunnel (06-08-2026)
-├── ingest.py             # CLI index PDF
-├── ask.py                # CLI tanya-jawab (RAG engine)
-├── query.py              # CLI search chunk saja
-├── requirements.txt
-├── .env / .env.example
-└── AGENTS.md             # pointer ke .agents/
+│   ├── md_parser.py      # Markdown parser
+│   ├── office_parser.py  # docx, pptx, html parser
+│   ├── url_parser.py     # Web scraper & url parser
+│   ├── watch_folder.py   # Watch folder uploads/ auto-indexer
+│   ├── vector_store.py   # ChromaDB + MiniLM
+│   ├── hybrid_search.py  # BM25 + Vector hybrid search engine
+│   ├── llm_client.py     # OpenAI-compatible chat via httpx
+│   ├── rag_engine.py     # RAGEngine.query()
+│   ├── semantic_cache.py # SemanticCache (collection query_cache)
+│   ├── learning.py       # Spaced repetition, weak spots, quiz generator, flashcards
+│   ├── annotations.py    # Chunk annotation notes manager
+│   ├── db.py             # SQLite: sessions, messages, review_cards, quiz_history, annotations
+│   ├── config.py         # Config Settings
+│   ├── main.py           # FastAPI app + CORS + rate limit + serve SPA
+│   ├── mcp_server.py     # Model Context Protocol (MCP) server
+│   └── telegram_bot.py   # Bot Telegram integration
+├── app/static/           # Hasil build React (bun run build dari frontend/)
+├── deploy/               # Systemd unit & script LXC deployment
+├── tests/                # Pytest unit tests (106 passed)
+├── uploads/              # Folder watch-folder dokumen
+├── data/                 # chroma_db/ & chat.db
+├── ingest.py / ask.py    # CLI tools
+└── start.cmd / run_dev.py# Dev process runner & watchdog
 ```
 
-## Alur ingestion
-Upload (UI/CLI) → simpan PDF ke `uploads/` → `parse_pdf()` (extract per halaman,
-deteksi heading font-size, merge segmen pendek, skip footer/digit) →
-`VectorStore.add_documents()` (embed MiniLM → upsert ke ChromaDB, metadata
-`{source, page, heading, chunk_index}`).
+## Alur Ingestion & Query
+- **Ingestion**: Upload (UI/CLI/Watch-folder/URL) → `parser` → `VectorStore.add_documents()` → MiniLM embedding → ChromaDB (`source`, `page`, `heading`, `chunk_index`).
+- **Query**: `RAGEngine.query()` → Cek semantic cache → `HybridSearch` (BM25 + ChromaDB) → Prompt RAG → LLM API → Return `RAGAnswer` + `SourceRef`.
+- **Query Stream SSE**: `/query/stream` melayani event `meta`, `delta` (text chunk), `done`, `error`.
 
-## Alur query
-`RAGEngine.query()`: cek cache (jika tanpa history) → `VectorStore.search()` Top-K →
-susun prompt `KONTEKS:[1..k]` + `PERTANYAAN` → `LLMClient.chat()` (max_tokens 512) →
-simpan cache (jika statis) → `RAGAnswer(answer, sources, model, cached)`.
-
-## Alur query ber-session (Sprint 4)
-1. `_build_history()`: sliding (last N) atau summary (ringkasan + last 5)
-2. Simpan pesan user ke SQLite
-3. `engine.query(..., history=history)` → history masuk prompt, cache di-skip
-4. Simpan jawaban + sources ke SQLite
-5. `_post_query_tasks()`: auto-title (pesan pertama), auto-summary (tiap 10 pesan)
-
-## Endpoint API (app/main.py)
-- `POST /upload`, `POST /query`, `GET /documents`, `DELETE /documents/{source}`
-- `POST /sessions/create`, `GET /sessions/list`, `GET /sessions/{id}/messages`,
-  `PUT /sessions/{id}/rename`, `DELETE /sessions/{id}`
-- `GET /health`
-
-Semua response `{"status": "ok", ...}`; error via HTTPException (400/404/422/502).
+## Single-Page Application (SPA) Routing
+FastAPI menyajikan file statis dari `app/static/`. Semua request non-API secara otomatis dialihkan ke `app/static/index.html` (SPA fallback), sehingga halaman React Router (`/library`, `/quiz`, `/flashcards`, `/progress`, `/settings`) bekerja tanpa 404.

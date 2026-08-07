@@ -9,14 +9,23 @@ langchain-community==0.4.2
 langchain-text-splitters==1.1.2
 chromadb==1.5.9
 sentence-transformers==5.6.1
+rank_bm25==0.2.2  # hybrid search (BM25 + vector)
 
 # PDF Processing
 pymupdf==1.28.0
 unstructured==0.25.0
 
+# Office/Web Processing (bulk ingest: docx, pptx, html)
+python-docx==1.2.0
+python-pptx==1.0.2
+
 # Optimization (semantic cache diimplementasikan via ChromaDB, bukan gptcache)
 python-dotenv==1.2.2
 httpx==0.28.1
+
+# Access layer (opsional — MCP server & bot Telegram)
+mcp==1.29.0
+python-telegram-bot==22.8
 
 # Testing
 pytest==9.1.1

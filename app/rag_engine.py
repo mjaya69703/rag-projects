@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 # Token maksimal untuk jawaban. Bisa di-set via env RAG_MAX_TOKENS.
 ANSWER_MAX_TOKENS = int(os.getenv("RAG_MAX_TOKENS", "1024"))
 
+# Relevance floor: cosine distance maksimum top-1 agar LLM dipanggil.
+# Di atas ini dianggap "tidak ada materi yang cukup relevan" — sistem
+# menolak menjawab dan menampilkan chunk terdekat sebagai bukti.
+# (Semantic cache memakai 0.25 untuk query-vs-query; query-vs-chunk
+# lebih longgar. Kalibrasi MiniLM: relevan 0.24-0.49, tak relevan >0.83
+# pada korpus sampel — 0.6 menangkap relevan borderline, menolak acak.)
+DEFAULT_MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.6"))
+
 SYSTEM_PROMPT = (
     "Kamu adalah asisten pribadi yang membantu pengguna memahami isi "
     "dokumen-dokumennya. Gaya bicaramu natural dan manusiawi, bukan seperti "
@@ -44,6 +52,7 @@ class Source:
     heading: str
     text: str
     distance: float
+    chunk_index: int = 0
 
 
 @dataclass
@@ -52,6 +61,7 @@ class RAGAnswer:
     sources: list[Source]
     model: str | None = None
     cached: bool = False
+    grounded: bool = True  # False = tidak ada materi cukup relevan, LLM tidak dipanggil
 
 
 class RAGEngine:
@@ -62,12 +72,16 @@ class RAGEngine:
         top_k: int = 5,
         cache: SemanticCache | None = None,
         use_cache: bool = True,
+        min_similarity: float | None = None,
     ) -> None:
         self.store = store or VectorStore()
         self.llm = llm or LLMClient()
         self.top_k = top_k
         self.use_cache = use_cache
         self.cache = cache if cache is not None else SemanticCache(self.store)
+        self.min_similarity = (
+            DEFAULT_MIN_SIMILARITY if min_similarity is None else min_similarity
+        )
 
     # ------------------------------------------------------------------
     # Prompt builder (dipakai query & stream_query)
@@ -145,10 +159,23 @@ class RAGEngine:
                 sources=[],
             )
 
+        # 3. Relevance floor: tanpa materi cukup relevan, jangan panggil LLM.
+        #    Hanya untuk query MANDIRI (tanpa history) — follow-up percakapan
+        #    ("jelaskan lebih detail") wajar tidak self-contained secara
+        #    semantik, konteksnya ada di history. Floor dihitung dari distance
+        #    MINIMUM: RRF di hybrid search bisa menaikkan chunk ber-distance
+        #    jauh ke top-1, padahal masih ada chunk relevan di hasil.
+        if not has_history and min(s.distance for s in sources) > self.min_similarity:
+            return RAGAnswer(
+                answer=self._build_not_grounded_message(sources),
+                sources=sources[:2],
+                grounded=False,
+            )
+
         messages = self._build_messages(question, sources, history, summary)
         response = self.llm.chat(messages, max_tokens=ANSWER_MAX_TOKENS)
 
-        # 3. Simpan hasil ke cache (hanya query statis)
+        # 4. Simpan hasil ke cache (hanya query statis)
         if self.use_cache and not has_history:
             self.cache.put(question, response.text, response.model, where)
 
@@ -200,6 +227,22 @@ class RAGEngine:
             yield {"type": "done", "answer": msg}
             return
 
+        # Relevance floor: tanpa materi cukup relevan, jangan panggil LLM.
+        # (Hanya query mandiri — follow-up percakapan konteksnya di history.)
+        if not has_history and min(s.distance for s in sources) > self.min_similarity:
+            msg = self._build_not_grounded_message(sources)
+            nearest = sources[:2]
+            yield {
+                "type": "meta",
+                "sources": nearest,
+                "cached": False,
+                "model": None,
+                "grounded": False,
+            }
+            yield {"type": "delta", "text": msg}
+            yield {"type": "done", "answer": msg}
+            return
+
         messages = self._build_messages(question, sources, history, summary)
         # Kirim metadata (sumber, model) lebih dulu supaya UI bisa render awal
         yield {
@@ -207,6 +250,7 @@ class RAGEngine:
             "sources": sources,
             "cached": False,
             "model": self.llm.model,
+            "grounded": True,
         }
 
         parts: list[str] = []
@@ -274,6 +318,7 @@ class RAGEngine:
                 heading=r["metadata"]["heading"],
                 text=r["text"],
                 distance=r["distance"],
+                chunk_index=r["metadata"].get("chunk_index", 0),
             )
             for r in results
         ]
@@ -287,3 +332,54 @@ class RAGEngine:
                 f"[{i}] (file: {src.source}, halaman: {src.page}, bagian: {src.heading})\n{src.text}"
             )
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _build_not_grounded_message(sources: list[Source]) -> str:
+        """Pesan transparan saat tidak ada materi yang cukup relevan."""
+        lines = [
+            "Tidak ada materi yang cukup relevan untuk menjawab pertanyaan ini. "
+            "Saya tidak akan mengarang jawaban.",
+            "",
+            "Chunk terdekat yang saya temukan (nilai sendiri apakah berguna):",
+        ]
+        for src in sources[:2]:
+            lines.append(
+                f"- ({src.source}, halaman {src.page}, bagian {src.heading}): "
+                f"{src.text[:240].strip()}"
+            )
+        return "\n".join(lines)
+
+    def document_status(
+        self, source: str, db_path: str | None = None
+    ) -> dict:
+        """Status dokumen untuk grounding: exists / deleted / available."""
+        active = [d["source"] for d in self.store.list_documents()]
+        deleted = []
+        if db_path is not None:
+            from app import db
+
+            deleted = [d["source"] for d in db.list_deleted_documents(db_path)]
+        return {
+            "exists": source in active,
+            "deleted": source in deleted,
+            "available": active,
+        }
+
+    def find_locations(self, question: str, top_k: int = 15) -> list[dict]:
+        """"Where is X covered?": peta lokasi topik di semua dokumen."""
+        results = self.store.search(question, top_k=max(top_k, 5))
+        groups: dict[tuple[str, int, str], int] = {}
+        for r in results:
+            meta = r["metadata"]
+            key = (
+                meta.get("source", "?"),
+                meta.get("page", 0),
+                meta.get("heading", ""),
+            )
+            groups[key] = groups.get(key, 0) + 1
+        out = [
+            {"source": s, "page": p, "heading": h, "count": c}
+            for (s, p, h), c in groups.items()
+        ]
+        out.sort(key=lambda x: x["count"], reverse=True)
+        return out

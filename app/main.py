@@ -1,15 +1,27 @@
 """FastAPI backend: expose logic RAG sebagai REST API + multi-session chat.
 
 Endpoint:
-- POST   /upload                     upload & index PDF
+- POST   /upload                     upload & index dokumen (PDF/MD/TXT)
+- POST   /ingest-url                 index konten dari URL (fitur #15)
 - POST   /query                      tanya jawab (bisa dengan session history)
 - GET    /documents                  daftar dokumen terindeks
-- DELETE /documents/{source}         hapus dokumen
+- DELETE /documents/{source}         hapus dokumen (tercatat di deleted_documents)
+- GET    /deleted-documents          daftar dokumen yang pernah dihapus
+- GET    /locations?q=               "Where is X covered?" (fitur #8)
+- GET    /repeated-questions         termometer pertanyaan berulang (7 hari)
 - POST   /sessions/create            buat session chat baru
 - GET    /sessions/list              daftar session
 - GET    /sessions/{id}/messages     riwayat pesan session
 - PUT    /sessions/{id}/rename       rename session
 - DELETE /sessions/{id}              hapus session + pesannya
+- GET    /learning/due               kartu review yang jatuh tempo (#1)
+- POST   /learning/answer            jawab kartu review (Ingat/Lupa) (#1)
+- GET    /learning/weak-spots        area lemah (#2)
+- GET    /learning/progress          progress bab per dokumen (#3)
+- POST   /learning/quiz/generate     buat soal dari materi (#4)
+- POST   /learning/quiz/grade        koreksi jawaban quiz (#4)
+- GET    /learning/quiz/history      riwayat skor quiz (#4)
+- GET    /learning/flashcards        kartu heading (tanpa LLM) (#5)
 - GET    /health                     health check
 - GET    /metrics                    metrik ringan (cache hit/miss, query, error LLM)
 
@@ -18,6 +30,7 @@ Jalankan: .venv\\Scripts\\uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import logging.handlers
@@ -29,11 +42,10 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app import db
+from app import annotations, db, learning
 from app.config import (
     CORS_ORIGINS,
     MAX_UPLOAD_MB,
@@ -44,9 +56,10 @@ from app.config import (
     Settings,
 )
 from app.llm_client import LLMError
-from app.pdf_parser import parse_pdf
 from app.rag_engine import RAGEngine
+from app.url_parser import parse_url
 from app.vector_store import VectorStore
+from app.watch_folder import SUPPORTED_EXTENSIONS, parse_any, scan_pending
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +71,10 @@ logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT)
 # /query/stream, dan /upload. Test me-reset lewat _RATE_LIMIT.clear().
 _RATE_LIMIT: dict[str, deque] = {}
 RATE_LIMIT_WINDOW_SEC = 60
-RATE_LIMIT_PATHS = {"/query", "/query/stream", "/upload"}
+RATE_LIMIT_PATHS = {"/query", "/query/stream", "/upload", "/ingest-url"}
+
+# Watch-folder: interval scan dokumen baru di upload_dir (detik).
+WATCH_FOLDER_INTERVAL_SEC = 30
 
 
 @asynccontextmanager
@@ -66,6 +82,7 @@ async def lifespan(app: FastAPI):
     settings = Settings()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     db.init_db(settings.db_path)
+    learning.ensure_tables(settings.db_path)
     store = VectorStore(persist_dir=settings.persist_dir)
     engine = RAGEngine(store=store)
     app.state.settings = settings
@@ -86,8 +103,14 @@ async def lifespan(app: FastAPI):
         store.count(),
         len(db.list_sessions(settings.db_path)),
     )
-    yield
-    store.close()
+    # Watch-folder: index otomatis file baru yang di-drop ke upload_dir.
+    watch_task = asyncio.create_task(_watch_folder_loop(settings, store))
+    app.state.watch_task = watch_task
+    try:
+        yield
+    finally:
+        watch_task.cancel()
+        store.close()
 
 
 app = FastAPI(
@@ -125,6 +148,59 @@ class QueryRequest(BaseModel):
 
 class RenameRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
+
+
+class IngestUrlRequest(BaseModel):
+    url: str = Field(..., min_length=5, max_length=2000)
+    source: str | None = Field(default=None, max_length=200)
+
+
+class AnswerCardRequest(BaseModel):
+    card_id: str = Field(..., min_length=1)
+    remembered: bool
+
+
+class QuizGenerateRequest(BaseModel):
+    source: str | None = None
+    n: int = Field(default=5, ge=1, le=20)
+
+
+class QuizGradeRequest(BaseModel):
+    questions: list[dict]
+    answers: list[int]
+
+
+class FlashcardAnswerRequest(BaseModel):
+    heading: str = Field(..., min_length=1, max_length=300)
+    source: str = Field(..., max_length=300)
+    known: bool
+
+
+def _watch_folder_loop(settings: Settings, store: VectorStore) -> None:
+    """Loop asinkron: index otomatis file baru di upload_dir (fitur #6)."""
+    import asyncio
+
+    async def loop() -> None:
+        while True:
+            try:
+                await asyncio.sleep(WATCH_FOLDER_INTERVAL_SEC)
+                indexed = {d["source"] for d in store.list_documents()}
+                pending = scan_pending(settings.upload_dir, indexed)
+                for path in pending:
+                    source = path.name
+                    chunks = parse_any(path, source=source)
+                    if not chunks:
+                        continue
+                    store.delete_document(source)  # replace
+                    store.add_documents(chunks, source=source)
+                    db.clear_deleted_document(settings.db_path, source)
+                    logger.info("watch-folder: %s terindeks (%d chunk)", source, len(chunks))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("watch-folder: error saat scan")
+
+    return loop()
 
 
 def _setup_file_logging(log_dir: str) -> None:
@@ -229,35 +305,59 @@ def metrics() -> dict:
     return dict(getattr(app.state, "metrics", {}))
 
 
+@app.get("/repeated-questions")
+def repeated_questions(days: int = 7, min_hits: int = 2) -> dict:
+    """Termometer read-only: pertanyaan yang diajukan berulang (7 hari).
+
+    Dipakai untuk memvalidasi asumsi "pengguna menanyakan hal yang sama
+    berulang" sebelum memutuskan membangun fitur review/spaced repetition.
+    Murni agregasi dari tabel messages — tidak ada efek samping.
+    """
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "days": days,
+        "min_hits": min_hits,
+        "usage": db.usage_summary(settings.db_path, days=days),
+        "questions": db.repeated_questions(
+            settings.db_path, days=days, min_hits=min_hits
+        ),
+    }
+
+
 @app.post("/upload")
 def upload(
     file: UploadFile = File(...),  # noqa: B008 - idiom FastAPI, bukan default biasa
     source: str | None = Form(default=None),
 ) -> dict:
-    """Upload PDF, parse, chunk, dan index ke ChromaDB."""
+    """Upload dokumen (PDF/MD/TXT), parse, chunk, dan index ke ChromaDB."""
     settings: Settings = app.state.settings
     filename = Path(file.filename or "file.pdf").name  # cegah path traversal
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Hanya file PDF yang didukung.")
+    ext = Path(filename).suffix.lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Format tidak didukung: {ext}. Gunakan {sorted(SUPPORTED_EXTENSIONS)}.",
+        )
 
     content = file.file.read()
     if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(
             status_code=400, detail=f"File maksimal {MAX_UPLOAD_MB} MB."
         )
-    if not content.lstrip().startswith(b"%PDF-"):
+    if ext == ".pdf" and not content.lstrip().startswith(b"%PDF-"):
         raise HTTPException(status_code=400, detail="File bukan PDF yang valid.")
 
-    pdf_path = settings.upload_dir / filename
-    pdf_path.write_bytes(content)
+    doc_path = settings.upload_dir / filename
+    doc_path.write_bytes(content)
 
     src = source or filename
     try:
-        chunks = parse_pdf(pdf_path, source=src)
+        chunks = parse_any(doc_path, source=src)
     except Exception as exc:
-        logger.exception("Gagal memproses PDF: %s", filename)
+        logger.exception("Gagal memproses dokumen: %s", filename)
         raise HTTPException(
-            status_code=400, detail=f"Gagal memproses PDF: {exc}"
+            status_code=400, detail=f"Gagal memproses dokumen: {exc}"
         ) from exc
     if not chunks:
         raise HTTPException(
@@ -267,10 +367,41 @@ def upload(
 
     store: VectorStore = app.state.store
     removed = store.delete_document(src)  # upload ulang = replace
+    db.clear_deleted_document(settings.db_path, src)  # sudah aktif lagi
     n = store.add_documents(chunks, source=src)
     return {
         "status": "ok",
         "source": src,
+        "kind": ext.lstrip("."),
+        "chunks": n,
+        "replaced": removed,
+        "documents": store.list_documents(),
+    }
+
+
+@app.post("/ingest-url")
+def ingest_url(req: IngestUrlRequest) -> dict:
+    """Index konten dari URL (fitur #15)."""
+    settings: Settings = app.state.settings
+    src = req.source or req.url
+    try:
+        chunks = parse_url(req.url, source=src)
+    except Exception as exc:
+        logger.exception("Gagal mengambil URL: %s", req.url)
+        raise HTTPException(
+            status_code=400, detail=f"Gagal mengambil URL: {exc}"
+        ) from exc
+    if not chunks:
+        raise HTTPException(status_code=400, detail="Tidak ada teks yang bisa diekstrak dari URL.")
+
+    store: VectorStore = app.state.store
+    removed = store.delete_document(src)  # re-index = replace
+    db.clear_deleted_document(settings.db_path, src)
+    n = store.add_documents(chunks, source=src)
+    return {
+        "status": "ok",
+        "source": src,
+        "kind": "url",
         "chunks": n,
         "replaced": removed,
         "documents": store.list_documents(),
@@ -294,6 +425,29 @@ def query(req: QueryRequest) -> dict:
         history, session_info, summary = _build_history(
             settings.db_path, req.session_id, req.mode, req.history_n
         )
+
+    # Grounding: filter ke dokumen yang tidak (lagi) ada di indeks.
+    if req.source:
+        status = engine.document_status(req.source, settings.db_path)
+        if not status["exists"]:
+            hint = "sudah dihapus dari indeks" if status["deleted"] else "belum pernah diindeks"
+            detail = (
+                f"Dokumen '{req.source}' {hint}. Dokumen yang aktif: "
+                f"{', '.join(status['available']) or 'tidak ada'}."
+            )
+            if session_info is not None:
+                db.add_message(settings.db_path, req.session_id, "user", req.question, [])
+                db.add_message(settings.db_path, req.session_id, "assistant", detail, [])
+            return {
+                "status": "ok",
+                "answer": detail,
+                "cached": False,
+                "model": None,
+                "sources": [],
+                "grounded": False,
+                "document_missing": True,
+                "session": session_info,
+            }
 
     # Simpan pertanyaan user SEBELUM call LLM (auto-title butuh pesan pertama)
     if session_info is not None:
@@ -332,6 +486,7 @@ def query(req: QueryRequest) -> dict:
         "cached": answer.cached,
         "model": answer.model,
         "sources": [_s_dict(s) for s in answer.sources],
+        "grounded": answer.grounded,
         "session": session_info,
     }
 
@@ -358,6 +513,38 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
             settings.db_path, req.session_id, req.mode, req.history_n
         )
 
+    # Grounding: filter ke dokumen yang tidak (lagi) ada di indeks.
+    if req.source:
+        status = engine.document_status(req.source, settings.db_path)
+        if not status["exists"]:
+            hint = "sudah dihapus dari indeks" if status["deleted"] else "belum pernah diindeks"
+            detail = (
+                f"Dokumen '{req.source}' {hint}. Dokumen yang aktif: "
+                f"{', '.join(status['available']) or 'tidak ada'}."
+            )
+            if session_info is not None:
+                db.add_message(settings.db_path, req.session_id, "user", req.question, [])
+                db.add_message(settings.db_path, req.session_id, "assistant", detail, [])
+                session_info = _post_query_tasks(
+                    engine, settings.db_path, req.session_id, req.question
+                )
+
+            async def missing_gen():
+                yield _sse(
+                    {
+                        "type": "meta",
+                        "sources": [],
+                        "cached": False,
+                        "model": None,
+                        "grounded": False,
+                        "document_missing": True,
+                    }
+                )
+                yield _sse({"type": "delta", "text": detail})
+                yield _sse({"type": "done", "answer": detail, "session": session_info})
+
+            return StreamingResponse(missing_gen(), media_type="text/event-stream")
+
     if session_info is not None:
         db.add_message(settings.db_path, req.session_id, "user", req.question, [])
 
@@ -379,6 +566,7 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
                 if ev["type"] == "meta":
                     cached = ev["cached"]
                     model = ev["model"]
+                    grounded = ev.get("grounded", True)
                     sources_json = [_s_dict(s) for s in ev["sources"]]
                     _record_query(metrics, cached)
                     yield _sse(
@@ -386,6 +574,7 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
                             "type": "meta",
                             "cached": cached,
                             "model": model,
+                            "grounded": grounded,
                             "sources": sources_json,
                         }
                     )
@@ -500,7 +689,42 @@ def _s_dict(s) -> dict:
         "heading": s.heading,
         "text": s.text,
         "distance": s.distance,
+        "chunk_index": s.chunk_index,
     }
+
+
+# ----------------------------------------------------------------------
+# Annotations (fitur #9) — catatan pribadi pada chunk
+# ----------------------------------------------------------------------
+class AnnotationRequest(BaseModel):
+    note: str = Field(..., max_length=2000)
+
+
+@app.get("/annotations")
+def list_annotations() -> dict:
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "annotations": annotations.list_annotations(settings.db_path),
+    }
+
+
+@app.put("/annotations/{chunk_key}")
+def upsert_annotation(chunk_key: str, req: AnnotationRequest) -> dict:
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "annotation": annotations.upsert_note(
+            settings.db_path, chunk_key, req.note
+        ),
+    }
+
+
+@app.delete("/annotations/{chunk_key}")
+def delete_annotation(chunk_key: str) -> dict:
+    settings: Settings = app.state.settings
+    annotations.upsert_note(settings.db_path, chunk_key, "")
+    return {"status": "ok", "chunk_key": chunk_key}
 
 
 # ----------------------------------------------------------------------
@@ -551,17 +775,187 @@ def documents() -> dict:
     return {"status": "ok", "documents": store.list_documents()}
 
 
+@app.get("/deleted-documents")
+def deleted_documents() -> dict:
+    """Daftar dokumen yang pernah dihapus (grounding: 'sudah dihapus')."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "documents": db.list_deleted_documents(settings.db_path),
+    }
+
+
+@app.get("/locations")
+def locations(q: str = "", top_k: int = 15) -> dict:
+    """"Where is X covered?" (fitur #8): peta lokasi topik di dokumen."""
+    engine: RAGEngine = app.state.engine
+    if not q.strip():
+        return {"status": "ok", "locations": []}
+    return {
+        "status": "ok",
+        "locations": engine.find_locations(q, top_k=top_k),
+    }
+
+
 @app.delete("/documents/{source}")
 def delete_document(source: str) -> dict:
     store: VectorStore = app.state.store
+    settings: Settings = app.state.settings
     removed = store.delete_document(source)
     if removed == 0:
         raise HTTPException(
             status_code=404, detail=f"Dokumen '{source}' tidak ditemukan."
         )
+    db.record_deleted_document(settings.db_path, source)
     return {"status": "ok", "source": source, "removed": removed}
 
 
-# Harus diletakkan terakhir: StaticFiles pada "/" adalah fallback untuk UI,
-# sedangkan endpoint API di atas tetap diprioritaskan oleh router.
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="web")
+# ----------------------------------------------------------------------
+# Learning loop (fitur #1-#5) — review mode, weak-spot, progress, quiz, flashcards
+# ----------------------------------------------------------------------
+@app.get("/learning/due")
+def learning_due(limit: int = 10) -> dict:
+    """Kartu review yang jatuh tempo (fitur #1)."""
+    settings: Settings = app.state.settings
+    learning.sync_cards(settings.db_path)
+    return {
+        "status": "ok",
+        "cards": learning.due_cards(settings.db_path, limit=limit),
+        "stats": learning.card_stats(settings.db_path),
+    }
+
+
+@app.post("/learning/answer")
+def learning_answer(req: AnswerCardRequest) -> dict:
+    """Catat jawaban kartu review: remembered=True naikkan interval (#1)."""
+    settings: Settings = app.state.settings
+    try:
+        card = learning.answer_card(
+            settings.db_path, req.card_id, req.remembered
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return {"status": "ok", "card": card}
+
+
+@app.get("/learning/weak-spots")
+def learning_weak_spots(limit: int = 8) -> dict:
+    """Topik yang paling sering diulang / sering lupa (#2)."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "weak_spots": learning.weak_spots(settings.db_path, limit=limit),
+    }
+
+
+@app.get("/learning/progress")
+def learning_progress() -> dict:
+    """Bab per dokumen yang sudah/belum dibahas (#3)."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "documents": learning.document_progress(settings.db_path),
+    }
+
+
+@app.post("/learning/quiz/generate")
+def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
+    """Buat soal pilihan ganda dari materi (#4)."""
+    engine: RAGEngine = app.state.engine
+    try:
+        questions = learning.generate_quiz(engine, source=req.source, n=req.n)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"status": "ok", "questions": questions}
+
+
+@app.post("/learning/quiz/grade")
+def learning_quiz_grade(req: QuizGradeRequest) -> dict:
+    """Koreksi jawaban quiz via LLM (#4)."""
+    engine: RAGEngine = app.state.engine
+    settings: Settings = app.state.settings
+    try:
+        result = learning.grade_quiz(engine, req.questions, req.answers)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    source = req.questions[0].get("source") if req.questions else ""
+    learning.save_quiz_score(settings.db_path, source, result["score"], result["total"])
+    return {"status": "ok", **result}
+
+
+@app.get("/learning/quiz/history")
+def learning_quiz_history(limit: int = 20) -> dict:
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "history": learning.quiz_history(settings.db_path, limit=limit),
+    }
+
+
+@app.get("/learning/flashcards")
+def learning_flashcards(source: str | None = None, limit: int = 20) -> dict:
+    """Kartu Q&A dari heading dokumen, tanpa LLM (#5)."""
+    store: VectorStore = app.state.store
+    return {
+        "status": "ok",
+        "cards": learning.flashcards(store, source=source, limit=limit),
+    }
+
+
+@app.post("/learning/flashcards/answer")
+def learning_flashcards_answer(req: FlashcardAnswerRequest) -> dict:
+    """Catat tahu/belum sebuah kartu flashcard."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "card": learning.answer_flashcard(
+            settings.db_path, req.heading, req.source, req.known
+        ),
+    }
+
+
+@app.get("/learning/flashcards/stats")
+def learning_flashcards_stats(limit: int = 50) -> dict:
+    """Statistik kartu: tahu vs belum, urut paling sering salah."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "stats": learning.flashcard_stats(settings.db_path, limit=limit),
+    }
+
+
+@app.get("/documents/{source}/chunks")
+def document_chunks(source: str, limit: int = 100) -> dict:
+    """Isi satu dokumen: daftar chunk (halaman + heading + teks) (Library).
+
+    Dipakai untuk preview/annotasi chunk dari halaman Library.
+    """
+    store: VectorStore = app.state.store
+    result = store.collection.get(
+        where={"source": source}, limit=limit, include=["documents", "metadatas"]
+    )
+    docs = result.get("documents") or []
+    metas = result.get("metadatas") or []
+    chunks = [
+        {
+            "chunk_index": (m or {}).get("chunk_index", i),
+            "page": (m or {}).get("page", 0),
+            "heading": (m or {}).get("heading", ""),
+            "text": d,
+        }
+        for i, (d, m) in enumerate(zip(docs, metas, strict=True))
+    ]
+    chunks.sort(key=lambda c: c["chunk_index"])
+    return {"status": "ok", "source": source, "chunks": chunks}
+
+
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str) -> FileResponse:
+    """SPA fallback (React): serve file statis kalau ada, selain itu
+    index.html — React Router yang menentukan halaman (/library, /quiz, …).
+    Route API di atas tetap diprioritaskan karena terdaftar lebih dulu.
+    """
+    candidate = FRONTEND_DIR / full_path
+    if candidate.is_file():
+        return FileResponse(candidate)
+    return FileResponse(FRONTEND_DIR / "index.html")

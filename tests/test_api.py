@@ -114,14 +114,32 @@ def test_full_flow() -> None:
         assert client.get("/documents").json()["documents"] == []
 
 
-def test_upload_reject_non_pdf() -> None:
+def test_upload_reject_unsupported_ext() -> None:
+    """Ekstensi tidak didukung (.exe) -> 400."""
     with TestClient(app) as client:
         resp = client.post(
             "/upload",
-            files={"file": ("note.txt", b"bukan pdf", "text/plain")},
+            files={"file": ("program.exe", b"binary", "application/octet-stream")},
         )
         assert resp.status_code == 400
-        assert "PDF" in resp.json()["detail"]
+        assert "Format tidak didukung" in resp.json()["detail"]
+
+
+def test_upload_markdown() -> None:
+    """Markdown (.md) sekarang format didukung (fitur #10)."""
+    with TestClient(app) as client:
+        md = b"# Bab VLAN\n\nVLAN adalah metode mempartisi jaringan fisik.\n"
+        resp = client.post(
+            "/upload",
+            files={"file": ("catatan.md", md, "text/markdown")},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["kind"] == "md"
+        assert body["chunks"] > 0
+        # query terhadap dokumen md bisa retrieve
+        q = client.post("/query", json={"question": "VLAN", "source": "catatan.md"})
+        assert q.status_code == 200
 
 
 def test_query_empty_question() -> None:
@@ -131,8 +149,12 @@ def test_query_empty_question() -> None:
 
 
 def test_query_no_documents() -> None:
+    """Store kosong -> pesan yang jelas, tanpa call LLM."""
     with TestClient(app) as client:
         _use_mock_llm(client)
+        # Bersihkan dokumen dari test lain (state global TestClient)
+        for doc in client.get("/documents").json()["documents"]:
+            client.delete(f"/documents/{doc['source']}")
         resp = client.post("/query", json={"question": "ada isi apa?"})
         assert resp.status_code == 200
         body = resp.json()
@@ -166,6 +188,147 @@ def test_delete_not_found() -> None:
     with TestClient(app) as client:
         resp = client.delete("/documents/tidak-ada.pdf")
         assert resp.status_code == 404
+
+
+def test_repeated_questions_endpoint() -> None:
+    """Termometer: pertanyaan yang diulang terhitung dari pesan session."""
+    with TestClient(app) as client:
+        _use_mock_llm(client)
+        sid = client.post("/sessions/create").json()["session"]["id"]
+        question = "pertanyaan termometer yang unik"
+        for _ in range(2):
+            resp = client.post(
+                "/query", json={"question": question, "session_id": sid}
+            )
+            assert resp.status_code == 200, resp.text
+
+        data = client.get("/repeated-questions").json()
+        assert data["status"] == "ok"
+        assert data["days"] == 7
+        assert data["usage"]["sessions_active"] >= 1
+        assert data["usage"]["questions"] >= 2
+        matches = [q for q in data["questions"] if q["question"] == question]
+        assert matches and matches[0]["count"] == 2
+
+
+def test_query_deleted_document_grounding() -> None:
+    """Query ke dokumen yang sudah dihapus -> respon jelas tanpa LLM."""
+    with TestClient(app) as client:
+        llm = _use_mock_llm(client)
+        client.post(
+            "/upload",
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        client.delete("/documents/sample_api.pdf")
+        assert client.get("/deleted-documents").json()["documents"][0]["source"] == "sample_api.pdf"
+
+        resp = client.post(
+            "/query", json={"question": "isi apa?", "source": "sample_api.pdf"}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["document_missing"] is True
+        assert "sudah dihapus" in body["answer"]
+        assert body["sources"] == []
+        assert llm.calls == 0, "dokumen hilang tidak boleh memanggil LLM"
+
+
+def test_learning_flashcards_and_due() -> None:
+    """Flashcards dari heading (tanpa LLM) + kartu review jatuh tempo."""
+    with TestClient(app) as client:
+        client.post(
+            "/upload",
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        cards = client.get("/learning/flashcards").json()["cards"]
+        assert cards, "flashcards harus ada dari dokumen terindeks"
+        assert all({"heading", "content"} <= set(c) for c in cards)
+
+        # pertanyaan diulang (via session, supaya tersimpan) -> kartu review
+        sid = client.post("/sessions/create").json()["session"]["id"]
+        for _ in range(2):
+            client.post("/query", json={"question": "Apa itu VLAN?", "session_id": sid})
+        due = client.get("/learning/due").json()
+        assert due["status"] == "ok"
+        assert any("VLAN" in c["question"] for c in due["cards"])
+
+
+def test_locations_endpoint() -> None:
+    """'Where is X covered?': lokasi topik di semua dokumen."""
+    with TestClient(app) as client:
+        client.post(
+            "/upload",
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        locs = client.get("/locations", params={"q": "VLAN"}).json()["locations"]
+        assert locs
+        assert locs[0]["source"] == "sample_api.pdf"
+        assert client.get("/locations").json()["locations"] == []
+
+
+def test_document_chunks_endpoint() -> None:
+    """Preview isi dokumen: chunk ber-halaman untuk halaman Library."""
+    with TestClient(app) as client:
+        client.post(
+            "/upload",
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        data = client.get("/documents/sample_api.pdf/chunks").json()
+        assert data["status"] == "ok"
+        assert data["chunks"], "harus ada chunk"
+        first = data["chunks"][0]
+        assert {"chunk_index", "page", "heading", "text"} <= set(first)
+        assert [c["chunk_index"] for c in data["chunks"]] == sorted(
+            c["chunk_index"] for c in data["chunks"]
+        )
+
+
+def test_flashcards_answer_endpoint() -> None:
+    """Tahu/belum flashcard tercatat; stats muncul."""
+    with TestClient(app) as client:
+        client.post(
+            "/upload",
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        resp = client.post(
+            "/learning/flashcards/answer",
+            json={"heading": "2.1 Pengertian VLAN", "source": "sample_api.pdf", "known": False},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["card"]["unknown_count"] == 1
+        stats = client.get("/learning/flashcards/stats").json()["stats"]
+        assert any(s["heading"] == "2.1 Pengertian VLAN" for s in stats)
+
+
+def test_quiz_generate_up_to_20() -> None:
+    """Jumlah soal bebas hingga 20 (backend le=20)."""
+    with TestClient(app) as client:
+        resp = client.post("/learning/quiz/generate", json={"n": 20, "source": None})
+        assert resp.status_code in (200, 502)
+
+
+def test_annotations_crud() -> None:
+    """Catatan pribadi pada chunk (fitur #9): simpan, list, hapus."""
+    from urllib.parse import quote
+
+    with TestClient(app) as client:
+        client.post(
+            "/upload",
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        key = "sample_api.pdf#0"
+        path = f"/annotations/{quote(key, safe='')}"
+        resp = client.put(path, json={"note": "Ingat: VLAN access = 1 VLAN"})
+        assert resp.status_code == 200
+        assert resp.json()["annotation"]["note"] == "Ingat: VLAN access = 1 VLAN"
+
+        notes = client.get("/annotations").json()["annotations"]
+        assert any(a["chunk_key"] == key for a in notes)
+
+        # update + hapus
+        client.put(path, json={"note": "revisi"})
+        assert client.delete(path).status_code == 200
+        assert client.get("/annotations").json()["annotations"] == []
 
 
 # ----------------------------------------------------------------------
@@ -327,7 +490,8 @@ def test_cors_header() -> None:
 def main() -> None:
     test_health()
     test_full_flow()
-    test_upload_reject_non_pdf()
+    test_upload_reject_unsupported_ext()
+    test_upload_markdown()
     test_query_empty_question()
     test_query_no_documents()
     test_delete_not_found()
@@ -339,6 +503,13 @@ def main() -> None:
     test_upload_reject_corrupt_pdf()
     test_rate_limit_429()
     test_cors_header()
+    test_query_deleted_document_grounding()
+    test_learning_flashcards_and_due()
+    test_locations_endpoint()
+    test_document_chunks_endpoint()
+    test_flashcards_answer_endpoint()
+    test_quiz_generate_up_to_20()
+    test_annotations_crud()
     print("\nSemua test Sprint 4+session (API) PASS ✔")
 
 

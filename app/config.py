@@ -43,3 +43,4 @@ class Settings:
         self.log_dir = os.getenv("LOG_DIR", "")  # kosong = file logging NONAKTIF
         self.cors_origins = list(CORS_ORIGINS)
         self.rate_limit_qpm = int(os.getenv("RATE_LIMIT_QPM", "30"))  # 0 = nonaktif
+        self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
