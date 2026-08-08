@@ -141,6 +141,7 @@ class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     top_k: int = Field(default=5, ge=1, le=20)
     source: str | None = None
+    category: str | None = None
     session_id: str | None = None
     mode: str = Field(default="sliding", pattern="^(sliding|summary)$")
     history_n: int = Field(default=SLIDING_WINDOW_DEFAULT, ge=1, le=50)
@@ -153,6 +154,11 @@ class RenameRequest(BaseModel):
 class IngestUrlRequest(BaseModel):
     url: str = Field(..., min_length=5, max_length=2000)
     source: str | None = Field(default=None, max_length=200)
+    category: str | None = Field(default=None, max_length=100)
+
+
+class SetCategoryRequest(BaseModel):
+    category: str = Field(..., min_length=1, max_length=100)
 
 
 class AnswerCardRequest(BaseModel):
@@ -176,6 +182,9 @@ class FlashcardAnswerRequest(BaseModel):
     known: bool
 
 
+from app.watch_folder import SUPPORTED_EXTENSIONS, get_category_for_path, parse_any, scan_pending
+
+
 def _watch_folder_loop(settings: Settings, store: VectorStore) -> None:
     """Loop asinkron: index otomatis file baru di upload_dir (fitur #6)."""
     import asyncio
@@ -188,13 +197,15 @@ def _watch_folder_loop(settings: Settings, store: VectorStore) -> None:
                 pending = scan_pending(settings.upload_dir, indexed)
                 for path in pending:
                     source = path.name
+                    cat = get_category_for_path(settings.upload_dir, path)
                     chunks = parse_any(path, source=source)
                     if not chunks:
                         continue
                     store.delete_document(source)  # replace
-                    store.add_documents(chunks, source=source)
+                    store.add_documents(chunks, source=source, category=cat)
+                    db.set_document_category(settings.db_path, source, cat)
                     db.clear_deleted_document(settings.db_path, source)
-                    logger.info("watch-folder: %s terindeks (%d chunk)", source, len(chunks))
+                    logger.info("watch-folder: %s (%s) terindeks (%d chunk)", source, cat, len(chunks))
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -329,6 +340,7 @@ def repeated_questions(days: int = 7, min_hits: int = 2) -> dict:
 def upload(
     file: UploadFile = File(...),  # noqa: B008 - idiom FastAPI, bukan default biasa
     source: str | None = Form(default=None),
+    category: str | None = Form(default=None),
 ) -> dict:
     """Upload dokumen (PDF/MD/TXT), parse, chunk, dan index ke ChromaDB."""
     settings: Settings = app.state.settings
@@ -352,6 +364,7 @@ def upload(
     doc_path.write_bytes(content)
 
     src = source or filename
+    cat = category.strip() if category and category.strip() else "Umum"
     try:
         chunks = parse_any(doc_path, source=src)
     except Exception as exc:
@@ -368,10 +381,12 @@ def upload(
     store: VectorStore = app.state.store
     removed = store.delete_document(src)  # upload ulang = replace
     db.clear_deleted_document(settings.db_path, src)  # sudah aktif lagi
-    n = store.add_documents(chunks, source=src)
+    n = store.add_documents(chunks, source=src, category=cat)
+    db.set_document_category(settings.db_path, src, cat)
     return {
         "status": "ok",
         "source": src,
+        "category": cat,
         "kind": ext.lstrip("."),
         "chunks": n,
         "replaced": removed,
@@ -384,6 +399,7 @@ def ingest_url(req: IngestUrlRequest) -> dict:
     """Index konten dari URL (fitur #15)."""
     settings: Settings = app.state.settings
     src = req.source or req.url
+    cat = req.category.strip() if req.category and req.category.strip() else "Umum"
     try:
         chunks = parse_url(req.url, source=src)
     except Exception as exc:
@@ -397,10 +413,12 @@ def ingest_url(req: IngestUrlRequest) -> dict:
     store: VectorStore = app.state.store
     removed = store.delete_document(src)  # re-index = replace
     db.clear_deleted_document(settings.db_path, src)
-    n = store.add_documents(chunks, source=src)
+    n = store.add_documents(chunks, source=src, category=cat)
+    db.set_document_category(settings.db_path, src, cat)
     return {
         "status": "ok",
         "source": src,
+        "category": cat,
         "kind": "url",
         "chunks": n,
         "replaced": removed,
@@ -413,7 +431,13 @@ def query(req: QueryRequest) -> dict:
     """Tanya jawab berdasarkan dokumen terindeks (+ konteks session bila ada)."""
     engine: RAGEngine = app.state.engine
     settings: Settings = app.state.settings
-    where = {"source": req.source} if req.source else None
+    where: dict | None = {}
+    if req.source:
+        where["source"] = req.source
+    if req.category:
+        where["category"] = req.category
+    if not where:
+        where = None
 
     history: list[dict] = []
     session_info: dict | None = None
@@ -500,7 +524,13 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
     """
     engine: RAGEngine = app.state.engine
     settings: Settings = app.state.settings
-    where = {"source": req.source} if req.source else None
+    where: dict | None = {}
+    if req.source:
+        where["source"] = req.source
+    if req.category:
+        where["category"] = req.category
+    if not where:
+        where = None
 
     history: list[dict] = []
     session_info: dict | None = None
@@ -772,7 +802,28 @@ def delete_session(session_id: str) -> dict:
 @app.get("/documents")
 def documents() -> dict:
     store: VectorStore = app.state.store
-    return {"status": "ok", "documents": store.list_documents()}
+    settings: Settings = app.state.settings
+    cats = db.list_document_categories(settings.db_path)
+    docs = store.list_documents()
+    for d in docs:
+        d["category"] = cats.get(d["source"], "Umum")
+    return {"status": "ok", "documents": docs}
+
+
+@app.get("/categories")
+def list_categories() -> dict:
+    settings: Settings = app.state.settings
+    return {"status": "ok", "categories": db.list_all_categories(settings.db_path)}
+
+
+@app.put("/documents/{source}/category")
+def set_document_category(source: str, req: SetCategoryRequest) -> dict:
+    settings: Settings = app.state.settings
+    store: VectorStore = app.state.store
+    cat = req.category.strip() or "Umum"
+    db.set_document_category(settings.db_path, source, cat)
+    store.update_document_category(source, cat)
+    return {"status": "ok", "source": source, "category": cat}
 
 
 @app.get("/deleted-documents")

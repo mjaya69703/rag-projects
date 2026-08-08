@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   api,
   type AnnotationItem,
+  type CategoryInfo,
   type DocumentInfo,
   type RepeatedQuestion,
   type ReviewCard,
@@ -25,6 +26,8 @@ interface Chunk {
 export default function Library() {
   const toast = useToast()
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
+  const [categories, setCategories] = useState<CategoryInfo[]>([])
+  const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [search, setSearch] = useState('')
   const [cards, setCards] = useState<ReviewCard[]>([])
   const [dueToday, setDueToday] = useState(0)
@@ -42,9 +45,13 @@ export default function Library() {
   const [annotations, setAnnotations] = useState<Record<string, string>>({})
   const [chunkFilter, setChunkFilter] = useState('')
 
-  // State untuk custom modal (menggantikan confirm & prompt bawaan browser)
+  // State untuk custom modal
   const [deleteDocSource, setDeleteDocSource] = useState<string | null>(null)
   const [deletingDocLoading, setDeletingDocLoading] = useState(false)
+
+  const [editCategoryDoc, setEditCategoryDoc] = useState<string | null>(null)
+  const [editCategoryName, setEditCategoryName] = useState('')
+  const [editingCategoryLoading, setEditingCategoryLoading] = useState(false)
 
   const [annotateKey, setAnnotateKey] = useState<string | null>(null)
   const [annotateNote, setAnnotateNote] = useState('')
@@ -64,8 +71,9 @@ export default function Library() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [docs, due, rep, spots, ann] = await Promise.all([
+      const [docs, cats, due, rep, spots, ann] = await Promise.all([
         api<{ documents: DocumentInfo[] }>('/documents'),
+        api<{ categories: CategoryInfo[] }>('/categories'),
         api<{ cards: ReviewCard[]; stats: { due_today: number } }>('/learning/due'),
         api<{ questions: RepeatedQuestion[]; usage: { sessions_active: number; questions: number }; days: number }>(
           '/repeated-questions',
@@ -74,6 +82,7 @@ export default function Library() {
         api<{ annotations: AnnotationItem[] }>('/annotations'),
       ])
       setDocuments(docs.documents)
+      setCategories(cats.categories || [])
       setCards(due.cards)
       setDueToday(due.stats.due_today)
       setRepeated(rep.questions)
@@ -130,6 +139,31 @@ export default function Library() {
     }
   }
 
+  // Modal custom edit kategori
+  function promptEditCategory(source: string, currentCategory = 'Umum') {
+    setEditCategoryDoc(source)
+    setEditCategoryName(currentCategory)
+  }
+
+  async function handleConfirmEditCategory(newCategory: string) {
+    if (!editCategoryDoc) return
+    setEditingCategoryLoading(true)
+    try {
+      const cat = newCategory.trim() || 'Umum'
+      await api(`/documents/${encodeURIComponent(editCategoryDoc)}/category`, {
+        method: 'PUT',
+        body: JSON.stringify({ category: cat }),
+      })
+      toast(`Kategori "${editCategoryDoc}" diubah menjadi "${cat}".`)
+      setEditCategoryDoc(null)
+      void loadAll()
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Gagal mengubah kategori.')
+    } finally {
+      setEditingCategoryLoading(false)
+    }
+  }
+
   // Modal custom anotasi chunk
   function promptAnnotate(key: string, currentNote: string) {
     setAnnotateKey(key)
@@ -175,7 +209,13 @@ export default function Library() {
   }
 
   const totalChunks = documents.reduce((acc, d) => acc + d.chunks, 0)
-  const filteredDocs = documents.filter((d) => d.source.toLowerCase().includes(search.toLowerCase()))
+
+  const filteredDocs = documents.filter((d) => {
+    const matchSearch = d.source.toLowerCase().includes(search.toLowerCase())
+    const matchCat = !selectedCategory || (d.category || 'Umum') === selectedCategory
+    return matchSearch && matchCat
+  })
+
   const filteredChunks = chunks.filter(
     (c) =>
       !chunkFilter ||
@@ -239,7 +279,7 @@ export default function Library() {
         <section className="library-card library-docs" aria-labelledby="lib-docs-label">
           <div className="section-label-row">
             <h2 id="lib-docs-label">Koleksi Dokumen</h2>
-            <span className="badge">{documents.length}</span>
+            <span className="badge">{filteredDocs.length} / {documents.length}</span>
           </div>
 
           <div style={{ marginBottom: 'var(--space-3)' }}>
@@ -252,15 +292,40 @@ export default function Library() {
             />
           </div>
 
+          {/* Category Filter Pills */}
+          {categories.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
+              <button
+                type="button"
+                className={`button button-secondary${selectedCategory === '' ? ' is-active' : ''}`}
+                style={{ minHeight: '28px', padding: '0 0.5rem', fontSize: 'var(--text-xs)', borderRadius: 'var(--radius-pill)' }}
+                onClick={() => setSelectedCategory('')}
+              >
+                Semua ({documents.length})
+              </button>
+              {categories.map((cat) => (
+                <button
+                  key={cat.category}
+                  type="button"
+                  className={`button button-secondary${selectedCategory === cat.category ? ' is-active' : ''}`}
+                  style={{ minHeight: '28px', padding: '0 0.5rem', fontSize: 'var(--text-xs)', borderRadius: 'var(--radius-pill)' }}
+                  onClick={() => setSelectedCategory(cat.category)}
+                >
+                  {cat.category} ({cat.doc_count})
+                </button>
+              ))}
+            </div>
+          )}
+
           <p className="watch-note" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-            <Icon name="i-bulb" /> Auto-index: letakkan file PDF, MD, atau TXT di folder <code>uploads/</code>
+            <Icon name="i-bulb" /> Auto-index: letakkan file di <code>uploads/</code> atau subfolder kategori!
           </p>
 
           <div className="document-list">
             {!ready ? (
               <p className="empty-list">Memuat daftar dokumen…</p>
             ) : filteredDocs.length === 0 ? (
-              <p className="empty-list">{search ? 'Tidak ada dokumen yang cocok.' : 'Belum ada dokumen terindeks.'}</p>
+              <p className="empty-list">{search || selectedCategory ? 'Tidak ada dokumen yang cocok.' : 'Belum ada dokumen terindeks.'}</p>
             ) : (
               filteredDocs.map((doc) => {
                 const isActive = selected === doc.source
@@ -278,9 +343,24 @@ export default function Library() {
                         </span>
                         <span className="document-title">{doc.source}</span>
                       </div>
-                      <small>
-                        {doc.chunks} chunk · {doc.pages.length} halaman
-                      </small>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: '0.2rem' }}>
+                        <small>
+                          {doc.chunks} chunk · {doc.pages.length} hal
+                        </small>
+                        <span className="badge" style={{ fontSize: '0.6rem', padding: '0.05rem 0.3rem', background: 'var(--color-paper-soft)', color: 'var(--color-accent)' }}>
+                          {doc.category || 'Umum'}
+                        </span>
+                      </div>
+                    </button>
+                    <button
+                      className="document-remove"
+                      type="button"
+                      aria-label={`Ubah kategori ${doc.source}`}
+                      title="Ubah Kategori"
+                      onClick={() => promptEditCategory(doc.source, doc.category)}
+                      style={{ marginRight: '0.2rem' }}
+                    >
+                      <Icon name="i-edit" />
                     </button>
                     <button
                       className="document-remove"
@@ -528,6 +608,19 @@ export default function Library() {
         loading={deletingDocLoading}
         onConfirm={() => void handleConfirmDeleteDoc()}
         onClose={() => setDeleteDocSource(null)}
+      />
+
+      {/* Modal Custom Edit Kategori Dokumen */}
+      <PromptDialog
+        open={editCategoryDoc !== null}
+        title="Ubah Kategori Dokumen"
+        message={`Masukkan nama kategori/folder baru untuk dokumen "${editCategoryDoc}":`}
+        defaultValue={editCategoryName}
+        placeholder="Contoh: Semester 1, Jaringan & Subnetting"
+        confirmText="Simpan Kategori"
+        loading={editingCategoryLoading}
+        onConfirm={(val) => void handleConfirmEditCategory(val)}
+        onClose={() => setEditCategoryDoc(null)}
       />
 
       {/* Modal Custom Anotasi Catatan Chunk */}

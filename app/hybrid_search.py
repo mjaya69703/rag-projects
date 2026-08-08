@@ -121,8 +121,9 @@ class HybridSearch:
             if score <= 0:
                 continue
             meta = self._corpus[idx]["metadata"]
-            if where and meta.get("source") != where.get("source"):
-                continue
+            if where:
+                if any(meta.get(k) != v for k, v in where.items()):
+                    continue
             bm25_hits.append((float(score), idx))
         bm25_hits.sort(key=lambda x: x[0], reverse=True)
         bm25_pool = bm25_hits[: max(top_k * VECTOR_POOL_FACTOR, top_k)]

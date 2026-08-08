@@ -93,12 +93,15 @@ class VectorStore:
     # ------------------------------------------------------------------
     # Ingestion
     # ------------------------------------------------------------------
-    def add_documents(self, chunks: Iterable[Chunk], source: str) -> int:
+    def add_documents(
+        self, chunks: Iterable[Chunk], source: str, category: str = "Umum"
+    ) -> int:
         """Embed & simpan chunk ke ChromaDB. Return jumlah chunk tersimpan."""
         chunk_list = list(chunks)
         if not chunk_list:
             return 0
 
+        cat = category.strip() or "Umum"
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict] = []
@@ -110,6 +113,7 @@ class VectorStore:
             metadatas.append(
                 {
                     "source": meta.get("source") or source,
+                    "category": meta.get("category") or cat,
                     "page": meta.get("page"),
                     "heading": meta.get("heading", ""),
                     "chunk_index": idx,
@@ -192,6 +196,21 @@ class VectorStore:
             self.collection.delete(ids=ids)
             self._hybrid.invalidate()
         return len(ids)
+
+    def update_document_category(self, source: str, category: str) -> None:
+        """Update metadata category milik semua chunk dokumen."""
+        cat = category.strip() or "Umum"
+        result = self.collection.get(where={"source": source}, include=["metadatas"])
+        ids = result.get("ids") or []
+        metadatas = result.get("metadatas") or []
+        if ids and metadatas:
+            new_metas = []
+            for meta in metadatas:
+                m = dict(meta)
+                m["category"] = cat
+                new_metas.append(m)
+            self.collection.update(ids=ids, metadatas=new_metas)
+            self._hybrid.invalidate()
 
     def count(self) -> int:
         return self.collection.count()

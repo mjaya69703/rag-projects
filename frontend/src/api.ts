@@ -28,6 +28,12 @@ export interface DocumentInfo {
   source: string
   chunks: number
   pages: number[]
+  category?: string
+}
+
+export interface CategoryInfo {
+  category: string
+  doc_count: number
 }
 
 export interface RepeatedQuestion {

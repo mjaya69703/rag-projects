@@ -115,6 +115,16 @@ export default function Flashcards() {
   const answered = orderedCards.filter((c) => stats[c.heading]).length
   const progress = orderedCards.length ? Math.round((answered / orderedCards.length) * 100) : 0
 
+  const groupedDocs = useMemo(() => {
+    const map: Record<string, DocumentInfo[]> = {}
+    for (const doc of documents) {
+      const cat = doc.category || 'Umum'
+      map[cat] = map[cat] || []
+      map[cat].push(doc)
+    }
+    return map
+  }, [documents])
+
   return (
     <div className="page-content">
       {/* Top Filter & Control Card */}
@@ -124,10 +134,14 @@ export default function Flashcards() {
             Pilih Dokumen Sumber Materi
             <select value={source} onChange={(e) => setSource(e.target.value)} disabled={loading || answering}>
               <option value="">Semua Dokumen Terindeks</option>
-              {documents.map((doc) => (
-                <option key={doc.source} value={doc.source}>
-                  {doc.source} ({doc.chunks} chunk)
-                </option>
+              {Object.entries(groupedDocs).map(([cat, docs]) => (
+                <optgroup key={cat} label={`📂 Kategori: ${cat}`}>
+                  {docs.map((doc) => (
+                    <option key={doc.source} value={doc.source}>
+                      {doc.source} ({doc.chunks} chunk)
+                    </option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </label>

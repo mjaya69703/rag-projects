@@ -1,18 +1,3 @@
-"""Watch Folder: scan direktori upload untuk file yang belum terindeks.
-
-Pure functions tanpa thread/task sendiri — integrator memanggilnya dari
-lifespan/loop aplikasi (mis. tiap startup: scan lalu index yang pending).
-
-Alur:
-1. ``scan_pending`` mencari file di upload_dir yang ekstensinya didukung
-   dan source-nya (nama file) belum ada di indexed_sources.
-2. ``parse_any`` mendispatch parsing sesuai ekstensi ke pdf/markdown/
-   office (docx/pptx) / html. URL tidak termasuk watch-folder; itu domain
-   url_parser.
-"""
-
-from __future__ import annotations
-
 import logging
 from pathlib import Path
 
@@ -40,16 +25,21 @@ def is_supported(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_EXTENSIONS
 
 
+def get_category_for_path(upload_dir: str | Path, path: str | Path) -> str:
+    """Dapatkan nama kategori dari nama subfolder di dalam upload_dir."""
+    try:
+        up_dir = Path(upload_dir).resolve()
+        p = Path(path).resolve()
+        rel = p.relative_to(up_dir)
+        if len(rel.parts) > 1:
+            return rel.parts[0]
+    except Exception:
+        pass
+    return "Umum"
+
+
 def parse_any(path: str | Path, source: str | None = None) -> list[Chunk]:
-    """Dispatch parsing sesuai ekstensi file (pdf/markdown/office/html).
-
-    Args:
-        path: Lokasi file.
-        source: Nama sumber (default: nama file).
-
-    Raises:
-        ValueError: Ekstensi tidak didukung.
-    """
+    """Dispatch parsing sesuai ekstensi file (pdf/markdown/office/html)."""
     path = Path(path)
     ext = path.suffix.lower()
     if ext == ".pdf":
@@ -69,19 +59,7 @@ def parse_any(path: str | Path, source: str | None = None) -> list[Chunk]:
 
 
 def scan_pending(upload_dir: str | Path, indexed_sources: set[str]) -> list[Path]:
-    """Daftar file di upload_dir yang belum terindeks, urut mtime (lama dulu).
-
-    Idempotent dan aman dipanggil berulang: tidak memodifikasi state apa pun.
-    File dianggap sudah terindeks bila ``indexed_sources`` memuat nama
-    file-nya (source default = nama file, konsisten dengan /upload).
-
-    Args:
-        upload_dir: Direktori yang dipindai.
-        indexed_sources: Set source (nama file) yang sudah ada di vector store.
-
-    Returns:
-        List of Path, urut waktu modifikasi menaik (file paling lama dulu).
-    """
+    """Daftar file di upload_dir (termasuk subfolder) yang belum terindeks."""
     upload_dir = Path(upload_dir)
     if not upload_dir.is_dir():
         return []
@@ -89,7 +67,7 @@ def scan_pending(upload_dir: str | Path, indexed_sources: set[str]) -> list[Path
     indexed = set(indexed_sources)
     pending = [
         p
-        for p in upload_dir.iterdir()
+        for p in upload_dir.rglob("*")
         if p.is_file()
         and p.suffix.lower() in SUPPORTED_EXTENSIONS
         and p.name not in indexed

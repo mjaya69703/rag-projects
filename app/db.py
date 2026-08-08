@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS deleted_documents (
     source     TEXT PRIMARY KEY,
     deleted_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS document_categories (
+    source     TEXT PRIMARY KEY,
+    category   TEXT NOT NULL DEFAULT 'Umum',
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -301,3 +307,44 @@ def get_summary(db_path: str | Path, session_id: str) -> dict | None:
             (session_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+# ----------------------------------------------------------------------
+# Categories & Grouping
+# ----------------------------------------------------------------------
+def set_document_category(db_path: str | Path, source: str, category: str) -> None:
+    cat = category.strip() or "Umum"
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO document_categories (source, category, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(source) DO UPDATE SET category = excluded.category, updated_at = excluded.updated_at",
+            (source, cat, _now()),
+        )
+
+
+def get_document_category(db_path: str | Path, source: str) -> str:
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT category FROM document_categories WHERE source = ?", (source,)
+        ).fetchone()
+    return row["category"] if row else "Umum"
+
+
+def list_document_categories(db_path: str | Path) -> dict[str, str]:
+    with _conn(db_path) as conn:
+        rows = conn.execute("SELECT source, category FROM document_categories").fetchall()
+    return {r["source"]: r["category"] for r in rows}
+
+
+def list_all_categories(db_path: str | Path) -> list[dict]:
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT category, COUNT(source) as doc_count FROM document_categories GROUP BY category ORDER BY category ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_document_category_mapping(db_path: str | Path, source: str) -> None:
+    with _conn(db_path) as conn:
+        conn.execute("DELETE FROM document_categories WHERE source = ?", (source,))
+

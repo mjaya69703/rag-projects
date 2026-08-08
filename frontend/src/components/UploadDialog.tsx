@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, ApiError } from '../api'
+import { api, ApiError, type CategoryInfo } from '../api'
 import { Icon } from './Icon'
 import { useToast } from './Toast'
 
@@ -14,21 +14,28 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const toast = useToast()
 
+  const [categories, setCategories] = useState<CategoryInfo[]>([])
   const [file, setFile] = useState<File | null>(null)
   const [fileName, setFileName] = useState('')
+  const [fileCategory, setFileCategory] = useState('')
   const [fileFeedback, setFileFeedback] = useState('')
   const [uploading, setUploading] = useState(false)
 
   const [url, setUrl] = useState('')
   const [urlName, setUrlName] = useState('')
+  const [urlCategory, setUrlCategory] = useState('')
   const [urlFeedback, setUrlFeedback] = useState('')
   const [fetching, setFetching] = useState(false)
 
   useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
-    if (open && !dialog.open) {
-      dialog.showModal()
+    if (open) {
+      if (!dialog.open) dialog.showModal()
+      // Fetch daftar kategori terkini saat dialog dibuka
+      void api<{ categories: CategoryInfo[] }>('/categories')
+        .then((res) => setCategories(res.categories || []))
+        .catch(() => setCategories([]))
     } else if (!open && dialog.open) {
       dialog.close()
     }
@@ -57,8 +64,9 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
       const form = new FormData()
       form.append('file', file)
       if (fileName.trim()) form.append('source', fileName.trim())
-      const data = await api<{ chunks: number; source: string }>('/upload', { method: 'POST', body: form })
-      toast(`${data.chunks} chunk dari “${data.source}” sudah terindeks.`)
+      if (fileCategory.trim()) form.append('category', fileCategory.trim())
+      const data = await api<{ chunks: number; source: string; category?: string }>('/upload', { method: 'POST', body: form })
+      toast(`${data.chunks} chunk dari “${data.source}” [${data.category || 'Umum'}] terindeks.`)
       onUploaded()
       onClose()
     } catch (error) {
@@ -77,13 +85,18 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
     setFetching(true)
     setUrlFeedback('Mengambil dan mengindeks URL…')
     try {
-      const data = await api<{ chunks: number; source: string }>('/ingest-url', {
+      const data = await api<{ chunks: number; source: string; category?: string }>('/ingest-url', {
         method: 'POST',
-        body: JSON.stringify({ url: url.trim(), source: urlName.trim() || null }),
+        body: JSON.stringify({
+          url: url.trim(),
+          source: urlName.trim() || null,
+          category: urlCategory.trim() || null,
+        }),
       })
-      toast(`${data.chunks} chunk dari “${data.source}” terindeks.`)
+      toast(`${data.chunks} chunk dari “${data.source}” [${data.category || 'Umum'}] terindeks.`)
       setUrl('')
       setUrlName('')
+      setUrlCategory('')
       onUploaded()
       onClose()
     } catch (error) {
@@ -105,6 +118,13 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
             <Icon name="i-close" />
           </button>
         </div>
+
+        {/* Datalist rekomendasi kategori */}
+        <datalist id="category-suggestions">
+          {categories.map((c) => (
+            <option key={c.category} value={c.category} />
+          ))}
+        </datalist>
 
         <form onSubmit={submitFile} noValidate>
           <label className="file-drop">
@@ -132,6 +152,17 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
               placeholder="Contoh: Modul Jaringan 2026"
               value={fileName}
               onChange={(event) => setFileName(event.target.value)}
+            />
+          </label>
+          <label className="field-label">
+            Kategori / Matkul <span>(opsional, default: Umum)</span>
+            <input
+              list="category-suggestions"
+              maxLength={100}
+              disabled={uploading || fetching}
+              placeholder="Pilih atau ketik baru (mis. Semester 1, Jaringan)"
+              value={fileCategory}
+              onChange={(event) => setFileCategory(event.target.value)}
             />
           </label>
           <p className={`form-feedback${fileFeedback.startsWith('Gagal') ? ' is-error' : ''}`} aria-live="polite">
@@ -167,6 +198,17 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
               placeholder="Kosong = pakai URL"
               value={urlName}
               onChange={(event) => setUrlName(event.target.value)}
+            />
+          </label>
+          <label className="field-label">
+            Kategori / Matkul <span>(opsional, default: Umum)</span>
+            <input
+              list="category-suggestions"
+              maxLength={100}
+              disabled={uploading || fetching}
+              placeholder="Pilih atau ketik baru (mis. Artikel Web)"
+              value={urlCategory}
+              onChange={(event) => setUrlCategory(event.target.value)}
             />
           </label>
           <p className={`form-feedback${urlFeedback.startsWith('Gagal') ? ' is-error' : ''}`} aria-live="polite">

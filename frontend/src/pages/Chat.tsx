@@ -112,6 +112,8 @@ export default function Chat() {
 
   const [question, setQuestion] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('')
+  const [categories, setCategories] = useState<CategoryInfo[]>([])
   const [mode, setMode] = useState('sliding')
   const [topK, setTopK] = useState(5)
   const [emptyHidden, setEmptyHidden] = useState(false)
@@ -142,6 +144,9 @@ export default function Chat() {
   useEffect(() => {
     if (activeId) void selectSession(activeId)
     void loadAnnotations()
+    void api<{ categories: CategoryInfo[] }>('/categories')
+      .then((res) => setCategories(res.categories || []))
+      .catch(() => setCategories([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId])
 
@@ -195,6 +200,7 @@ export default function Chat() {
           question: text,
           top_k: topK,
           source: sourceFilter || null,
+          category: categoryFilter || null,
           session_id: activeId,
           mode,
         }),
@@ -336,6 +342,21 @@ export default function Chat() {
       <section className="composer-area" aria-label="Tulis pertanyaan">
         <div className="composer-container">
           <div className="context-strip">
+            {categories.length > 0 && (
+              <div className="pill-group">
+                <label>
+                  Kategori:
+                  <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+                    <option value="">Semua kategori</option>
+                    {categories.map((cat) => (
+                      <option key={cat.category} value={cat.category}>
+                        {cat.category} ({cat.doc_count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
             <div className="pill-group">
               <label>
                 Dokumen:
