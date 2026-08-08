@@ -118,8 +118,8 @@ export default function Quiz() {
       {/* Quiz Setup Header Banner */}
       <section className="library-card" style={{ padding: 'var(--space-5)' }}>
         <div style={{ marginBottom: 'var(--space-3)' }}>
-          <h2 style={{ fontSize: 'var(--text-lg)', fontWeight: 800, marginBottom: '0.2rem' }}>
-            🎯 Buat Paket Soal Latihan Baru
+          <h2 style={{ fontSize: 'var(--text-lg)', fontWeight: 800, marginBottom: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Icon name="i-quiz" /> Buat Paket Soal Latihan Baru
           </h2>
           <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted)' }}>
             Pilih dokumen materi dan jumlah soal yang ingin Anda uji. Sistem RAG akan menyusun soal pilihan ganda secara relevan.
@@ -130,10 +130,10 @@ export default function Quiz() {
           <label className="field-label" style={{ flex: 1, minWidth: '15rem', marginBottom: 0 }}>
             Dokumen Sumber Materi
             <select value={source} onChange={(e) => setSource(e.target.value)} disabled={loading || grading}>
-              <option value="">📚 Semua Dokumen Terindeks</option>
+              <option value="">Semua Dokumen Terindeks</option>
               {documents.map((doc) => (
                 <option key={doc.source} value={doc.source}>
-                  📄 {doc.source} ({doc.chunks} chunk)
+                  {doc.source} ({doc.chunks} chunk)
                 </option>
               ))}
             </select>
@@ -178,7 +178,9 @@ export default function Quiz() {
                 <span className="spinner" style={{ marginRight: '0.4rem' }} /> Membuat Soal…
               </>
             ) : (
-              '🚀 Generate Quiz'
+              <>
+                <Icon name="i-zap" /> Generate Quiz
+              </>
             )}
           </button>
         </div>
@@ -277,9 +279,17 @@ export default function Quiz() {
                   {detail && (
                     <span
                       className={`badge ${detail.correct ? 'badge-priority-medium' : 'badge-priority-high'}`}
-                      style={{ flexShrink: 0, padding: '0.2rem 0.6rem' }}
+                      style={{ flexShrink: 0, padding: '0.2rem 0.6rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
                     >
-                      {detail.correct ? '✓ Benar' : '✕ Salah'}
+                      {detail.correct ? (
+                        <>
+                          <Icon name="i-check" /> Benar
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="i-close" /> Salah
+                        </>
+                      )}
                     </span>
                   )}
                 </div>
@@ -304,9 +314,15 @@ export default function Quiz() {
                         />
                         <span className="quiz-option-letter">{letter}</span>
                         <span style={{ flex: 1, fontSize: 'var(--text-sm)' }}>{opt}</span>
-                        {isKey && <small className="quiz-key-badge">✓ Kunci Jawaban</small>}
+                        {isKey && (
+                          <small className="quiz-key-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}>
+                            <Icon name="i-check" /> Kunci Jawaban
+                          </small>
+                        )}
                         {!isKey && isSelected && detail && !detail.correct && (
-                          <small style={{ color: 'var(--color-error)', fontWeight: 600 }}>✕ Jawaban Anda</small>
+                          <small style={{ color: 'var(--color-error)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}>
+                            <Icon name="i-close" /> Jawaban Anda
+                          </small>
                         )}
                       </label>
                     )
@@ -315,8 +331,8 @@ export default function Quiz() {
 
                 {detail?.explanation && (
                   <div className="quiz-explanation" style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', background: 'var(--color-paper-soft)' }}>
-                    <p style={{ margin: 0, fontWeight: 700, fontSize: 'var(--text-xs)', color: 'var(--color-secondary)' }}>
-                      💡 Penjelasan:
+                    <p style={{ margin: 0, fontWeight: 700, fontSize: 'var(--text-xs)', color: 'var(--color-secondary)', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                      <Icon name="i-bulb" /> Penjelasan:
                     </p>
                     <p style={{ margin: '0.2rem 0 0', fontSize: 'var(--text-xs)', color: 'var(--color-ink)' }}>
                       {detail.explanation}
@@ -336,7 +352,7 @@ export default function Quiz() {
           style={{ padding: 'var(--space-5)', borderRadius: 'var(--radius-lg)', textAlign: 'center' }}
         >
           <h3 style={{ fontSize: 'var(--text-lg)', margin: '0 0 0.4rem', color: score === details.length ? 'var(--color-success)' : 'var(--color-ink)' }}>
-            🎉 Hasil Quiz: {score} / {details.length} Benar ({Math.round((score / details.length) * 100)}%)
+            Hasil Quiz: {score} / {details.length} Benar ({Math.round((score / details.length) * 100)}%)
           </h3>
           {feedback && <p style={{ margin: 0, fontSize: 'var(--text-sm)', opacity: 0.9 }}>{feedback}</p>}
         </div>
@@ -346,7 +362,9 @@ export default function Quiz() {
       {history.length > 0 && (
         <div className="library-card" style={{ marginTop: 'var(--space-4)', padding: 'var(--space-5)' }}>
           <div className="section-label-row">
-            <h2>📜 Riwayat Quiz Sebelumnya</h2>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Icon name="i-history" /> Riwayat Quiz Sebelumnya
+            </h2>
             <span className="badge">{history.length} percobaan</span>
           </div>
           <div className="repeated-list" style={{ maxHeight: '16rem' }}>

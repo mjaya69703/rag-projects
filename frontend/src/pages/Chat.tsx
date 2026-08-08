@@ -67,7 +67,9 @@ function MessageItem({
               )}
             </div>
             {showGrounding && !documentMissing && (
-              <p className="grounded-notice">⚠️ Tidak ada materi yang cukup relevan — jawaban di atas bukan dari dokumen.</p>
+              <p className="grounded-notice">
+                <Icon name="i-alert" /> Tidak ada materi yang cukup relevan — jawaban di atas bukan dari dokumen.
+              </p>
             )}
             {cached && (
               <span className="cache-note">
@@ -285,7 +287,9 @@ export default function Chat() {
           <p>Unggah materi dokumen lalu ajukan pertanyaan. Jawaban akan langsung merujuk ke sumber paragraf dan halamannya.</p>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', marginTop: 'var(--space-4)' }}>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-subtle)', fontWeight: 600 }}>💡 COBA PERTANYAAN CONTOH:</span>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-subtle)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+              <Icon name="i-bulb" /> COBA PERTANYAAN CONTOH:
+            </span>
             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 'var(--space-2)' }}>
               {[
                 'Apa isi ringkasan dokumen ini?',
@@ -296,13 +300,13 @@ export default function Chat() {
                   key={qText}
                   type="button"
                   className="button button-secondary"
-                  style={{ minHeight: '34px', padding: '0 0.75rem', fontSize: 'var(--text-xs)', borderRadius: 'var(--radius-pill)' }}
+                  style={{ minHeight: '34px', padding: '0 0.75rem', fontSize: 'var(--text-xs)', borderRadius: 'var(--radius-pill)', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
                   onClick={() => {
                     setQuestion(qText)
                     questionRef.current?.focus()
                   }}
                 >
-                  ✨ {qText}
+                  <Icon name="i-sparkles" /> {qText}
                 </button>
               ))}
             </div>
@@ -334,7 +338,7 @@ export default function Chat() {
           <div className="context-strip">
             <div className="pill-group">
               <label>
-                📄 Dokumen:
+                Dokumen:
                 <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
                   <option value="">Semua dokumen</option>
                   {documents.map((doc) => (
@@ -347,7 +351,7 @@ export default function Chat() {
             </div>
             <div className="pill-group">
               <label>
-                🧠 Konteks:
+                Konteks:
                 <select value={mode} onChange={(e) => setMode(e.target.value)}>
                   <option value="sliding">Sliding window</option>
                   <option value="summary">Ringkasan + recent</option>
@@ -356,7 +360,7 @@ export default function Chat() {
             </div>
             <div className="pill-group">
               <label>
-                🎯 Top-k:
+                Top-k:
                 <select value={topK} onChange={(e) => setTopK(Number(e.target.value))}>
                   {[3, 5, 8, 10, 15].map((n) => (
                     <option key={n} value={n}>

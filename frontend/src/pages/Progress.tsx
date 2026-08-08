@@ -89,7 +89,9 @@ export default function Progress() {
         {/* Coverage Per Dokumen */}
         <section className="library-card library-docs" aria-labelledby="prog-docs-label">
           <div className="section-label-row">
-            <h2 id="prog-docs-label">📊 Cakupan Materi Per Dokumen</h2>
+            <h2 id="prog-docs-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Icon name="i-chart" /> Cakupan Materi Per Dokumen
+            </h2>
             <span className="badge">{docs.length} dokumen</span>
           </div>
           {!ready ? (
@@ -103,7 +105,7 @@ export default function Progress() {
                 return (
                   <div className="progress-doc" key={doc.source} style={{ padding: 'var(--space-4)', borderRadius: 'var(--radius-md)' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
-                      <strong style={{ fontSize: 'var(--text-sm)', wordBreak: 'break-all' }}>📄 {doc.source}</strong>
+                      <strong style={{ fontSize: 'var(--text-sm)', wordBreak: 'break-all' }}>{doc.source}</strong>
                       <span className="badge" style={{ fontSize: '0.68rem' }}>{doc.total_questions} Q</span>
                     </div>
 
@@ -144,13 +146,15 @@ export default function Progress() {
         {/* Matrix Area Lemah */}
         <section className="library-card" aria-labelledby="prog-weak-label">
           <div className="section-label-row">
-            <h2 id="prog-weak-label">⚠️ Area Lemah (Perlu Review)</h2>
+            <h2 id="prog-weak-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Icon name="i-alert" /> Area Lemah (Perlu Review)
+            </h2>
             <span className="badge">{weak.length}</span>
           </div>
           {!ready ? (
             <p className="empty-list">Memuat…</p>
           ) : weak.length === 0 ? (
-            <p className="empty-list">✨ Belum ada topik lemah yang terdeteksi.</p>
+            <p className="empty-list">Belum ada topik lemah yang terdeteksi.</p>
           ) : (
             <div className="repeated-list">
               {weak.map((spot) => (
@@ -177,7 +181,9 @@ export default function Progress() {
         {/* Kartu Review Due */}
         <section className="library-card" aria-labelledby="prog-due-label">
           <div className="section-label-row">
-            <h2 id="prog-due-label">🔄 Antrean Kartu Review</h2>
+            <h2 id="prog-due-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Icon name="i-refresh" /> Antrean Kartu Review
+            </h2>
             <span className="badge">{due.length} due</span>
           </div>
           {!ready ? (
@@ -201,7 +207,9 @@ export default function Progress() {
         {/* Riwayat Quiz Timeline */}
         <section className="library-card" aria-labelledby="prog-quiz-label">
           <div className="section-label-row">
-            <h2 id="prog-quiz-label">📜 Riwayat Skor Quiz</h2>
+            <h2 id="prog-quiz-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Icon name="i-history" /> Riwayat Skor Quiz
+            </h2>
             <span className="badge">{history.length}</span>
           </div>
           {!ready ? (

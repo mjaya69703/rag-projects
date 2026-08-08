@@ -80,7 +80,7 @@ export default function Flashcards() {
         method: 'POST',
         body: JSON.stringify({ heading: current.heading, source: source || '', known }),
       })
-      toast(known ? 'Kartu ditandai Sudah Tahu! 🌟' : 'Kartu ditandai Perlu Belajar Lagi 🔄')
+      toast(known ? 'Kartu ditandai Sudah Tahu!' : 'Kartu ditandai Perlu Belajar Lagi')
       void loadStats()
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Gagal menyimpan jawaban.')
@@ -123,10 +123,10 @@ export default function Flashcards() {
           <label className="field-label" style={{ flex: 1, minWidth: '15rem', marginBottom: 0 }}>
             Pilih Dokumen Sumber Materi
             <select value={source} onChange={(e) => setSource(e.target.value)} disabled={loading || answering}>
-              <option value="">📚 Semua Dokumen Terindeks</option>
+              <option value="">Semua Dokumen Terindeks</option>
               {documents.map((doc) => (
                 <option key={doc.source} value={doc.source}>
-                  📄 {doc.source} ({doc.chunks} chunk)
+                  {doc.source} ({doc.chunks} chunk)
                 </option>
               ))}
             </select>
@@ -144,7 +144,7 @@ export default function Flashcards() {
             )}
           </button>
 
-          <label className="field-label checkbox-inline" style={{ marginBottom: 0, cursor: 'pointer' }}>
+          <label className="field-label checkbox-inline" style={{ marginBottom: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
             <input
               type="checkbox"
               checked={shuffle}
@@ -154,7 +154,7 @@ export default function Flashcards() {
                 setIndex(0)
               }}
             />
-            🔀 Acak Urutan Kartu
+            <Icon name="i-shuffle" /> Acak Urutan Kartu
           </label>
         </div>
       </section>
@@ -189,7 +189,7 @@ export default function Flashcards() {
           {/* Flashcard Stats & Badge */}
           <div style={{ display: 'flex', justifyContent: 'between', alignItems: 'center', maxWidth: '38rem', margin: '0 auto', width: '100%' }}>
             <span className="badge" style={{ background: 'var(--color-paper-soft)', border: '1px solid var(--color-rule)' }}>
-              📄 {source || 'Semua Dokumen'}
+              {source || 'Semua Dokumen'}
             </span>
             <span className="flashcard-counter" style={{ marginLeft: 'auto' }}>
               {stats[current.heading]?.known_count || 0}× Tahu · {stats[current.heading]?.unknown_count || 0}× Belum
@@ -270,10 +270,14 @@ export default function Flashcards() {
                 color: 'var(--color-error)',
                 border: '1px solid var(--color-error)',
                 minWidth: '10rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.4rem',
               }}
             >
-              {answering ? <span className="spinner" style={{ marginRight: '0.3rem' }} /> : null}
-              <span>✕ Belum Tahu</span>
+              {answering ? <span className="spinner" /> : <Icon name="i-close" />}
+              <span>Belum Tahu</span>
             </button>
             <button
               className="button"
@@ -285,10 +289,14 @@ export default function Flashcards() {
                 color: 'var(--color-success)',
                 border: '1px solid var(--color-success)',
                 minWidth: '10rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.4rem',
               }}
             >
-              {answering ? <span className="spinner" style={{ marginRight: '0.3rem' }} /> : null}
-              <span>✓ Sudah Tahu</span>
+              {answering ? <span className="spinner" /> : <Icon name="i-check" />}
+              <span>Sudah Tahu</span>
             </button>
           </div>
         </div>

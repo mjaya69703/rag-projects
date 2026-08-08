@@ -165,7 +165,7 @@ export default function Library() {
         method: 'POST',
         body: JSON.stringify({ card_id: cardId, remembered }),
       })
-      toast(remembered ? 'Kartu ditandai Ingat 👍' : 'Kartu akan diulang nanti 🔄')
+      toast(remembered ? 'Kartu ditandai Ingat' : 'Kartu akan diulang nanti')
       void loadAll()
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Gagal menyimpan jawaban.')
@@ -246,13 +246,15 @@ export default function Library() {
             <input
               type="text"
               className="chunk-search"
-              placeholder="🔍 Cari dokumen..."
+              placeholder="Cari dokumen..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
 
-          <p className="watch-note">💡 Auto-index: letakkan file PDF, MD, atau TXT di folder <code>uploads/</code></p>
+          <p className="watch-note" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <Icon name="i-bulb" /> Auto-index: letakkan file PDF, MD, atau TXT di folder <code>uploads/</code>
+          </p>
 
           <div className="document-list">
             {!ready ? (
@@ -301,8 +303,8 @@ export default function Library() {
           <section className="library-card chunk-detail" aria-labelledby="lib-chunk-label">
             <div className="section-label-row" style={{ alignItems: 'flex-start' }}>
               <div>
-                <h2 id="lib-chunk-label" style={{ wordBreak: 'break-all' }}>
-                  📄 {selected}
+                <h2 id="lib-chunk-label" style={{ wordBreak: 'break-all', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Icon name="i-file" /> {selected}
                 </h2>
                 <small style={{ color: 'var(--color-muted)', fontFamily: 'var(--font-mono)' }}>
                   {loadingChunks ? 'Memuat chunk…' : `Menampilkan ${filteredChunks.length} dari ${chunks.length} chunk`}
@@ -310,11 +312,11 @@ export default function Library() {
               </div>
               <button
                 className="button button-secondary"
-                style={{ minHeight: '32px', padding: '0 0.6rem', fontSize: 'var(--text-xs)' }}
+                style={{ minHeight: '32px', padding: '0 0.6rem', fontSize: 'var(--text-xs)', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
                 type="button"
                 onClick={() => setSelected(null)}
               >
-                ✕ Tutup Pratinjau
+                <Icon name="i-close" /> Tutup Pratinjau
               </button>
             </div>
 
@@ -323,7 +325,7 @@ export default function Library() {
               style={{ marginTop: 'var(--space-2)' }}
               value={chunkFilter}
               onChange={(e) => setChunkFilter(e.target.value)}
-              placeholder="🔍 Cari teks atau bab dalam dokumen ini…"
+              placeholder="Cari teks atau bab dalam dokumen ini…"
             />
 
             <div className="chunk-list">
@@ -351,10 +353,22 @@ export default function Library() {
                         </span>
                       </div>
                       <p className="chunk-text">{chunk.text}</p>
-                      {note && <p className="annotation-note">📌 Catatan: {note}</p>}
+                      {note && (
+                        <p className="annotation-note" style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                          <Icon name="i-pin" /> Catatan: {note}
+                        </p>
+                      )}
                       <div style={{ marginTop: 'var(--space-2)', display: 'flex', justifyContent: 'flex-end' }}>
-                        <button className="annotation-btn" type="button" onClick={() => promptAnnotate(key, note || '')}>
-                          {note ? '✏️ Edit Catatan' : '＋ Tambah Catatan'}
+                        <button className="annotation-btn" type="button" onClick={() => promptAnnotate(key, note || '')} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                          {note ? (
+                            <>
+                              <Icon name="i-edit" /> Edit Catatan
+                            </>
+                          ) : (
+                            <>
+                              <Icon name="i-plus" /> Tambah Catatan
+                            </>
+                          )}
                         </button>
                       </div>
                     </div>
@@ -368,14 +382,16 @@ export default function Library() {
             {/* Panel Kartu Review */}
             <section className="library-card" aria-labelledby="lib-review-label">
               <div className="section-label-row">
-                <h2 id="lib-review-label">🎯 Review Spaced Repetition</h2>
+                <h2 id="lib-review-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Icon name="i-card" /> Review Spaced Repetition
+                </h2>
                 <span className="badge">{dueToday} due</span>
               </div>
               <div className="review-list">
                 {!ready ? (
                   <p className="empty-list">Memuat…</p>
                 ) : cards.length === 0 ? (
-                  <p className="empty-list">✨ Tidak ada kartu yang jatuh tempo hari ini. Bagus!</p>
+                  <p className="empty-list">Tidak ada kartu yang jatuh tempo hari ini. Bagus!</p>
                 ) : (
                   cards.map((card) => {
                     const isProcessing = answeringCardId === card.card_id
@@ -384,8 +400,14 @@ export default function Library() {
                         <span className="review-question" title={card.question}>
                           {card.question}
                         </span>
-                        <small>
-                          {card.lapses > 0 ? `⚠️ ${card.lapses}× lupa` : `Interval: ${card.interval_days} hari`}
+                        <small style={{ display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}>
+                          {card.lapses > 0 ? (
+                            <>
+                              <Icon name="i-alert" /> {card.lapses}× lupa
+                            </>
+                          ) : (
+                            `Interval: ${card.interval_days} hari`
+                          )}
                         </small>
                         <div className="review-actions">
                           <button
@@ -394,7 +416,7 @@ export default function Library() {
                             disabled={isProcessing}
                             onClick={() => void answerCard(card.card_id, true)}
                           >
-                            {isProcessing ? <span className="spinner" /> : '✓ Ingat'}
+                            {isProcessing ? <span className="spinner" /> : 'Ingat'}
                           </button>
                           <button
                             className="review-btn is-ko"
@@ -402,7 +424,7 @@ export default function Library() {
                             disabled={isProcessing}
                             onClick={() => void answerCard(card.card_id, false)}
                           >
-                            {isProcessing ? <span className="spinner" /> : '✗ Lupa'}
+                            {isProcessing ? <span className="spinner" /> : 'Lupa'}
                           </button>
                         </div>
                       </div>
@@ -415,7 +437,9 @@ export default function Library() {
             {/* Panel Pertanyaan Berulang */}
             <section className="library-card" aria-labelledby="lib-repeated-label">
               <div className="section-label-row">
-                <h2 id="lib-repeated-label">🔥 Pertanyaan Sering Diajukan</h2>
+                <h2 id="lib-repeated-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Icon name="i-flame" /> Pertanyaan Sering Diajukan
+                </h2>
                 <span className="badge">{repeated.length}</span>
               </div>
               {usage && <p className="repeated-usage">{usage}</p>}
@@ -440,7 +464,9 @@ export default function Library() {
             {/* Panel Area Lemah */}
             <section className="library-card" aria-labelledby="lib-weak-label">
               <div className="section-label-row">
-                <h2 id="lib-weak-label">💡 Area Perlu Ditingkatkan</h2>
+                <h2 id="lib-weak-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Icon name="i-bulb" /> Area Perlu Ditingkatkan
+                </h2>
                 <span className="badge">{weak.length}</span>
               </div>
               <div className="weak-list">
@@ -464,7 +490,9 @@ export default function Library() {
             {/* Panel Catatan */}
             <section className="library-card" aria-labelledby="lib-notes-label">
               <div className="section-label-row">
-                <h2 id="lib-notes-label">📌 Catatan & Anotasi</h2>
+                <h2 id="lib-notes-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Icon name="i-pin" /> Catatan & Anotasi
+                </h2>
                 <span className="badge">{notes.length}</span>
               </div>
               <div className="notes-list">
@@ -475,8 +503,8 @@ export default function Library() {
                 ) : (
                   notes.slice(0, 6).map((item) => (
                     <div className="repeated-item" key={item.chunk_key}>
-                      <span className="repeated-question" title={item.note}>
-                        📌 {item.note}
+                      <span className="repeated-question" title={item.note} style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                        <Icon name="i-pin" /> {item.note}
                       </span>
                       <small>{item.chunk_key.split('#')[0]}</small>
                     </div>

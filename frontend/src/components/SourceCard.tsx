@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { api, type SourceRef } from '../api'
+import { Icon } from './Icon'
 import { PromptDialog } from './PromptDialog'
 import { useToast } from './Toast'
 
@@ -79,9 +80,26 @@ export function SourceAccordion({ sources, annotations, onAnnotated }: Props) {
                   {source.source} · halaman {source.page}
                 </small>
                 <p>{(source.text || '').slice(0, 320)}</p>
-                {note && <p className="annotation-note">📌 {note}</p>}
-                <button className="annotation-btn" type="button" onClick={() => openPrompt(source)}>
-                  {note ? '✏️ Edit catatan' : '＋ catat'}
+                {note && (
+                  <p className="annotation-note" style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <Icon name="i-pin" /> {note}
+                  </p>
+                )}
+                <button
+                  className="annotation-btn"
+                  type="button"
+                  onClick={() => openPrompt(source)}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                >
+                  {note ? (
+                    <>
+                      <Icon name="i-edit" /> Edit catatan
+                    </>
+                  ) : (
+                    <>
+                      <Icon name="i-plus" /> catat
+                    </>
+                  )}
                 </button>
               </div>
             )
