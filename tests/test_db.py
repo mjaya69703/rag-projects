@@ -166,6 +166,31 @@ def test_deleted_documents_tracking(tmp_path: Path) -> None:
     assert len(db.list_deleted_documents(path)) == 1
 
 
+def test_glossary_crud_search_and_verification(tmp_path: Path) -> None:
+    path = tmp_path / "chat.db"
+    db.init_db(path)
+
+    term = db.create_glossary_term(
+        path,
+        "RAG",
+        "Teknik mengambil konteks sebelum membuat jawaban.",
+        source="materi.pdf",
+        page=4,
+        category="AI",
+    )
+    assert term["id"] and term["verified"] is False
+    assert db.list_glossary(path, search="konteks")[0]["term"] == "RAG"
+    assert db.list_glossary(path, source="materi.pdf", verified=False)
+
+    updated = db.update_glossary_term(
+        path, term["id"], "RAG", "Definisi yang sudah dicek.", verified=True
+    )
+    assert updated and updated["verified"] is True
+    assert db.list_glossary(path, verified=True)[0]["definition"] == "Definisi yang sudah dicek."
+    assert db.delete_glossary_term(path, term["id"])
+    assert db.list_glossary(path) == []
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
@@ -176,6 +201,7 @@ def main() -> None:
         test_repeated_questions(tmp_path)
         test_usage_summary(tmp_path)
         test_deleted_documents_tracking(tmp_path)
+        test_glossary_crud_search_and_verification(tmp_path)
     print("\nSemua test DB PASS ✔")
 
 

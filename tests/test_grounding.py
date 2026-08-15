@@ -42,15 +42,32 @@ def _make_engine(tmp_path: Path, min_similarity: float) -> tuple[RAGEngine, Vect
 
 
 def test_relevance_floor_blocks_llm(tmp_path: Path) -> None:
-    """Floor sangat ketat (0.0) -> grounded=False, LLM tidak dipanggil."""
+    """Floor sangat ketat (0.0) + pertanyaan tidak relevan -> grounded=False."""
     engine, store = _make_engine(tmp_path, min_similarity=0.0)
     try:
-        answer = engine.query("Apa itu VLAN?")
+        answer = engine.query("resep masakan nasi goreng")
         assert answer.grounded is False
         assert answer.sources, "tetap tampilkan chunk terdekat sebagai bukti"
         assert "tidak akan mengarang" in answer.answer
         assert engine.llm.calls == 0, "LLM tidak boleh dipanggil saat tidak grounded"
         print("[OK] relevance floor: tanpa materi relevan, LLM diblokir")
+    finally:
+        store.close()
+
+
+def test_lexical_grounding_bypasses_floor(tmp_path: Path) -> None:
+    """P1-04: floor ketat tapi term pertanyaan cocok leksikal -> grounded.
+
+    Perbaikan audit: relevance floor lama hanya melihat distance top-1;
+    sekarang overlap leksikal per-chunk ikut dievaluasi sehingga chunk
+    yang memuat istilah pertanyaan tetap dianggap relevan.
+    """
+    engine, store = _make_engine(tmp_path, min_similarity=0.0)
+    try:
+        answer = engine.query("Apa itu VLAN?")
+        assert answer.grounded is True, "term 'vlan' ada di chunk -> grounded"
+        assert engine.llm.calls == 1
+        print("[OK] lexical grounding: istilah pertanyaan di chunk -> grounded")
     finally:
         store.close()
 
@@ -110,6 +127,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
         test_relevance_floor_blocks_llm(tmp_path)
+        test_lexical_grounding_bypasses_floor(tmp_path)
         test_relevance_floor_allows_llm(tmp_path)
         test_document_status(tmp_path)
         test_find_locations(tmp_path)

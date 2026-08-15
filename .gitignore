@@ -5,7 +5,10 @@ __pycache__/
 venv/
 .pytest_cache/
 .mypy_cache/
+.pytest-tmp/
 .ruff_cache/
+graphify-out/
+
 
 # ====== Env & secrets (REPO INI OPEN SOURCE — jangan pernah commit) ======
 .env
@@ -32,4 +35,5 @@ desktop.ini
 
 # ====== Tools & artifacts ======
 *.tmp
+.hallmark/
 nul

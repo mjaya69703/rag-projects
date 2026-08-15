@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,6 +57,25 @@ def _use_mock_llm(client: TestClient) -> FakeLLM:
     return llm
 
 
+def _upload_wait(client: TestClient, **kwargs) -> dict:
+    """Upload -> poll job sampai ready/error (kontrak ingestion asinkron)."""
+    resp = client.post("/upload", **kwargs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    if body.get("status") == "ready":  # dedup: tidak berubah
+        return body
+    assert body["status"] == "processing", body
+    job_id = body["job_id"]
+    job = None
+    for _ in range(200):  # maks ~10 detik
+        job = client.get(f"/jobs/{job_id}").json()["job"]
+        if job["status"] in ("ready", "error"):
+            break
+        time.sleep(0.05)
+    assert job is not None and job["status"] == "ready", job
+    return {**body, "status": "ready", "chunks": job.get("chunks", 0)}
+
+
 def test_health() -> None:
     with TestClient(app) as client:
         assert client.get("/health").json() == {"status": "ok"}
@@ -66,14 +86,11 @@ def test_full_flow() -> None:
     with TestClient(app) as client:
         llm = _use_mock_llm(client)
 
-        # upload
-        resp = client.post(
-            "/upload",
+        # upload (asinkron: poll job)
+        data = _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert data["status"] == "ok"
         assert data["source"] == "sample_api.pdf"
         assert data["chunks"] > 0
 
@@ -129,12 +146,10 @@ def test_upload_markdown() -> None:
     """Markdown (.md) sekarang format didukung (fitur #10)."""
     with TestClient(app) as client:
         md = b"# Bab VLAN\n\nVLAN adalah metode mempartisi jaringan fisik.\n"
-        resp = client.post(
-            "/upload",
+        body = _upload_wait(
+            client,
             files={"file": ("catatan.md", md, "text/markdown")},
         )
-        assert resp.status_code == 200, resp.text
-        body = resp.json()
         assert body["kind"] == "md"
         assert body["chunks"] > 0
         # query terhadap dokumen md bisa retrieve
@@ -166,8 +181,8 @@ def test_stream_query_endpoint() -> None:
     """/query/stream: jawaban mengalir via SSE, tetap ada meta + done."""
     with TestClient(app) as client:
         llm = _use_mock_llm(client)
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
         with client.stream(
@@ -215,8 +230,8 @@ def test_query_deleted_document_grounding() -> None:
     """Query ke dokumen yang sudah dihapus -> respon jelas tanpa LLM."""
     with TestClient(app) as client:
         llm = _use_mock_llm(client)
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
         client.delete("/documents/sample_api.pdf")
@@ -236,8 +251,8 @@ def test_query_deleted_document_grounding() -> None:
 def test_learning_flashcards_and_due() -> None:
     """Flashcards dari heading (tanpa LLM) + kartu review jatuh tempo."""
     with TestClient(app) as client:
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
         cards = client.get("/learning/flashcards").json()["cards"]
@@ -256,8 +271,8 @@ def test_learning_flashcards_and_due() -> None:
 def test_locations_endpoint() -> None:
     """'Where is X covered?': lokasi topik di semua dokumen."""
     with TestClient(app) as client:
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
         locs = client.get("/locations", params={"q": "VLAN"}).json()["locations"]
@@ -269,8 +284,8 @@ def test_locations_endpoint() -> None:
 def test_document_chunks_endpoint() -> None:
     """Preview isi dokumen: chunk ber-halaman untuk halaman Library."""
     with TestClient(app) as client:
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
         data = client.get("/documents/sample_api.pdf/chunks").json()
@@ -286,8 +301,8 @@ def test_document_chunks_endpoint() -> None:
 def test_flashcards_answer_endpoint() -> None:
     """Tahu/belum flashcard tercatat; stats muncul."""
     with TestClient(app) as client:
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
         resp = client.post(
@@ -301,10 +316,15 @@ def test_flashcards_answer_endpoint() -> None:
 
 
 def test_quiz_generate_up_to_20() -> None:
-    """Jumlah soal bebas hingga 20 (backend le=20)."""
+    """Jumlah soal bebas hingga 20; response punya attempt_id (P2-04)."""
     with TestClient(app) as client:
         resp = client.post("/learning/quiz/generate", json={"n": 20, "source": None})
-        assert resp.status_code in (200, 502)
+        # 200 = ada materi; 400 = tidak ada materi; 502 = LLM error
+        assert resp.status_code in (200, 400, 502), resp.text
+        if resp.status_code == 200:
+            body = resp.json()
+            assert body["attempt_id"]
+            assert all("answer_index" not in q for q in body["questions"])
 
 
 def test_annotations_crud() -> None:
@@ -312,8 +332,8 @@ def test_annotations_crud() -> None:
     from urllib.parse import quote
 
     with TestClient(app) as client:
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
         key = "sample_api.pdf#0"
@@ -366,8 +386,8 @@ def test_session_query_saves_messages_and_auto_title() -> None:
         sid = client.post("/sessions/create").json()["session"]["id"]
 
         # upload dulu biar ada dokumen
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
 
@@ -401,8 +421,8 @@ def test_session_history_context() -> None:
     with TestClient(app) as client:
         llm = _use_mock_llm(client)
         sid = client.post("/sessions/create").json()["session"]["id"]
-        client.post(
-            "/upload",
+        _upload_wait(
+            client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
         )
 
@@ -444,13 +464,23 @@ def test_upload_reject_fake_pdf() -> None:
 
 
 def test_upload_reject_corrupt_pdf() -> None:
-    """File ber-magic %PDF tapi rusak -> 400 (parse error ditangkap), bukan 500."""
+    """PDF ber-magic %PDF tapi rusak -> job berakhir status=error, bukan 500."""
     with TestClient(app) as client:
         resp = client.post(
             "/upload",
             files={"file": ("corrupt.pdf", b"%PDF-1.7\n%%%%EOF", "application/pdf")},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "processing"
+        job = None
+        for _ in range(200):  # maks ~10 detik
+            job = client.get(f"/jobs/{body['job_id']}").json()["job"]
+            if job["status"] in ("ready", "error"):
+                break
+            time.sleep(0.05)
+        assert job is not None and job["status"] == "error", job
+        assert job["error"]
 
 
 def test_rate_limit_429() -> None:

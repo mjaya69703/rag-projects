@@ -17,3 +17,12 @@
 ### Sprint 6 (Deployment LXC + Cloudflare) 🔶
 - Systemd unit `rag-backend.service`, `install_lxc.sh`, & `README-DEPLOY.md` di `deploy/` siap.
 - Menunggu konfig tunnel `cloudflared` di dashboard.
+
+### Perbaikan dari Audit 2026-08-09 (in progress) 🔶
+> Berdasar [`.docs/PROJECT_AUDIT_2026-08-09.md`](../.docs/PROJECT_AUDIT_2026-08-09.md). Detail implementasi belum tentu ada di kode — jangan berasumsi sudah selesai.
+
+- **Auth token aplikasi** (P0-02) — status: in progress (2026-08-09).
+- **SSRF protection pada ingest URL** (P0-01) — status: in progress (2026-08-09).
+- **Ingestion async + atomic** (P1-01) — status: in progress (2026-08-09).
+- **Backup/restore & recovery** (P2-08) — status: in progress (2026-08-09).
+- **Quiz attempt server-side + scoring deterministik** (P2-04) — status: in progress (2026-08-09).

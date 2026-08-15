@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -71,6 +72,10 @@ class VectorStore:
         )
         # Index BM25 lazy untuk hybrid search; di-invalidate saat mutasi.
         self._hybrid = HybridSearch(self)
+        # Serialisasi SEMUA mutasi index (P1-06): aplikasi ini single-process
+        # (uvicorn workers=1); lock ini mencegah race antara ingestion job,
+        # watch-folder, dan update kategori saat berjalan di threadpool.
+        self._lock = threading.RLock()
 
     @property
     def model(self) -> SentenceTransformer:
@@ -93,19 +98,15 @@ class VectorStore:
     # ------------------------------------------------------------------
     # Ingestion
     # ------------------------------------------------------------------
-    def add_documents(
-        self, chunks: Iterable[Chunk], source: str, category: str = "Umum"
-    ) -> int:
-        """Embed & simpan chunk ke ChromaDB. Return jumlah chunk tersimpan."""
-        chunk_list = list(chunks)
-        if not chunk_list:
-            return 0
-
+    def _prepare(
+        self, chunks: list[Chunk], source: str, category: str
+    ) -> tuple[list[str], list[str], list[dict]]:
+        """Bangun ids/documents/metadatas untuk satu dokumen (source)."""
         cat = category.strip() or "Umum"
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict] = []
-        for chunk in chunk_list:
+        for chunk in chunks:
             meta = chunk.metadata
             idx = meta.get("chunk_index", len(ids))
             ids.append(f"{_slug(meta.get('source') or source)}_chunk_{idx}")
@@ -119,16 +120,55 @@ class VectorStore:
                     "chunk_index": idx,
                 }
             )
+        return ids, documents, metadatas
 
-        embeddings = self._embed_documents(documents)
-        self.collection.upsert(
-            ids=ids,
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadatas,
-        )
-        self._hybrid.invalidate()
-        return len(ids)
+    def add_documents(
+        self, chunks: Iterable[Chunk], source: str, category: str = "Umum"
+    ) -> int:
+        """Embed & simpan chunk ke ChromaDB. Return jumlah chunk tersimpan."""
+        chunk_list = list(chunks)
+        if not chunk_list:
+            return 0
+        with self._lock:
+            ids, documents, metadatas = self._prepare(chunk_list, source, category)
+            embeddings = self._embed_documents(documents)
+            self.collection.upsert(
+                ids=ids,
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
+            self._hybrid.invalidate()
+            return len(ids)
+
+    def replace_document(
+        self, chunks: Iterable[Chunk], source: str, category: str = "Umum"
+    ) -> int:
+        """Ganti satu dokumen secara atomik-ish: embed dulu, hapus lama, upsert baru.
+
+        Urutan ini mengecilkan jendela "dokumen lama hilang + baru belum
+        jadi": kalau embedding gagal, versi lama MASIH ada di index.
+        Delete + upsert berada dalam satu lock yang sama dengan mutasi lain.
+        """
+        chunk_list = list(chunks)
+        if not chunk_list:
+            return 0
+        with self._lock:
+            ids, documents, metadatas = self._prepare(chunk_list, source, category)
+            # Embedding bisa gagal/berat -> dilakukan SEBELUM delete.
+            embeddings = self._embed_documents(documents)
+            old = self.collection.get(where={"source": source}, include=[])
+            old_ids = old.get("ids") or []
+            if old_ids:
+                self.collection.delete(ids=old_ids)
+            self.collection.upsert(
+                ids=ids,
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
+            self._hybrid.invalidate()
+            return len(ids)
 
     # ------------------------------------------------------------------
     # Query
@@ -190,35 +230,38 @@ class VectorStore:
 
     def delete_document(self, source: str) -> int:
         """Hapus semua chunk milik satu dokumen. Return jumlah terhapus."""
-        result = self.collection.get(where={"source": source}, include=[])
-        ids = result.get("ids") or []
-        if ids:
-            self.collection.delete(ids=ids)
-            self._hybrid.invalidate()
-        return len(ids)
+        with self._lock:
+            result = self.collection.get(where={"source": source}, include=[])
+            ids = result.get("ids") or []
+            if ids:
+                self.collection.delete(ids=ids)
+                self._hybrid.invalidate()
+            return len(ids)
 
     def update_document_category(self, source: str, category: str) -> None:
         """Update metadata category milik semua chunk dokumen."""
         cat = category.strip() or "Umum"
-        result = self.collection.get(where={"source": source}, include=["metadatas"])
-        ids = result.get("ids") or []
-        metadatas = result.get("metadatas") or []
-        if ids and metadatas:
-            new_metas = []
-            for meta in metadatas:
-                m = dict(meta)
-                m["category"] = cat
-                new_metas.append(m)
-            self.collection.update(ids=ids, metadatas=new_metas)
-            self._hybrid.invalidate()
+        with self._lock:
+            result = self.collection.get(where={"source": source}, include=["metadatas"])
+            ids = result.get("ids") or []
+            metadatas = result.get("metadatas") or []
+            if ids and metadatas:
+                new_metas = []
+                for meta in metadatas:
+                    m = dict(meta)
+                    m["category"] = cat
+                    new_metas.append(m)
+                self.collection.update(ids=ids, metadatas=new_metas)
+                self._hybrid.invalidate()
 
     def count(self) -> int:
         return self.collection.count()
 
     def reset(self) -> None:
         """Hapus semua chunk dokumen (dipakai saat ganti model embedding)."""
-        for doc in self.list_documents():
-            self.delete_document(doc["source"])
+        with self._lock:
+            for doc in self.list_documents():
+                self.delete_document(doc["source"])
 
     def close(self) -> None:
         """Tutup koneksi ChromaDB & lepas file lock (penting di Windows)."""

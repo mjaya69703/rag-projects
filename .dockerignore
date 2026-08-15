@@ -1,0 +1,29 @@
+# Dependencies & build artifacts (jangan masuk build context)
+.venv/
+frontend/node_modules/
+__pycache__/
+*.py[cod]
+.pytest-tmp/
+.pytest_cache/
+.ruff_cache/
+
+# Runtime data
+data/
+uploads/
+
+# Git, tooling & docs (tidak diperlukan di dalam image)
+.git/
+.gitignore
+.dockerignore
+.agents/
+.docs/
+.hallmark/
+.vscode/
+docs/
+deploy/
+
+# Secrets & logs
+.env
+.env.*
+!.env.example
+*.log

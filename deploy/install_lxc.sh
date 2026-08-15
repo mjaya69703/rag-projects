@@ -60,7 +60,7 @@ if [ "$SRC" != "$APP_DIR" ]; then
     # Salin TANPA artefak yang tidak berguna/berbahaya di Linux:
     #   .git, .venv (venv Windows tidak jalan di Linux), .env (rahasia),
     #   data/ uploads/ (data runtime lama), __pycache__, .pytest_cache,
-    #   node_modules, .hallmark
+    #   node_modules, .hallmark, .docs, .vscode, .pytest-tmp
     tar -C "$SRC" \
         --exclude='.git' \
         --exclude='.venv' \
@@ -70,7 +70,10 @@ if [ "$SRC" != "$APP_DIR" ]; then
         --exclude='uploads' \
         --exclude='__pycache__' \
         --exclude='.pytest_cache' \
+        --exclude='.pytest-tmp' \
         --exclude='.hallmark' \
+        --exclude='.docs' \
+        --exclude='.vscode' \
         -cf - . | tar -C "$APP_DIR" -xf -
     info "Kode disalin dari $SRC."
 else

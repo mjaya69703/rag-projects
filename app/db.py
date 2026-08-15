@@ -60,6 +60,46 @@ CREATE TABLE IF NOT EXISTS document_categories (
     category   TEXT NOT NULL DEFAULT 'Umum',
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,
+    actor       TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    ip          TEXT NOT NULL DEFAULT '',
+    status      INTEGER NOT NULL,
+    duration_ms REAL NOT NULL DEFAULT 0
+);
+
+-- Document registry: source of truth untuk lifecycle file/index.
+-- status: queued | processing | ready | error
+CREATE TABLE IF NOT EXISTS documents (
+    source     TEXT PRIMARY KEY,
+    job_id     TEXT NOT NULL DEFAULT '',
+    kind       TEXT NOT NULL DEFAULT 'file',
+    file_path  TEXT NOT NULL DEFAULT '',
+    checksum   TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    category   TEXT NOT NULL DEFAULT 'Umum',
+    status     TEXT NOT NULL DEFAULT 'queued',
+    chunks     INTEGER NOT NULL DEFAULT 0,
+    error      TEXT NOT NULL DEFAULT '',
+    version    INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS glossary_terms (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    term        TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    definition  TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',
+    page        INTEGER,
+    category    TEXT NOT NULL DEFAULT 'Umum',
+    verified    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 """
 
 
@@ -67,6 +107,96 @@ def init_db(db_path: str | Path) -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     with _conn(db_path) as conn:
         conn.executescript(SCHEMA)
+
+
+# ----------------------------------------------------------------------
+# Glossary
+# ----------------------------------------------------------------------
+def list_glossary(
+    db_path: str | Path,
+    search: str = "",
+    source: str | None = None,
+    verified: bool | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Daftar istilah dengan pencarian term/definisi yang case-insensitive."""
+    clauses: list[str] = []
+    params: list[object] = []
+    if search.strip():
+        like = f"%{search.strip()}%"
+        clauses.append("(term LIKE ? OR definition LIKE ?)")
+        params.extend([like, like])
+    if source:
+        clauses.append("source = ?")
+        params.append(source)
+    if verified is not None:
+        clauses.append("verified = ?")
+        params.append(int(verified))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(limit, 200)))
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT id, term, definition, source, page, category, verified, created_at, updated_at "
+            f"FROM glossary_terms {where} ORDER BY term COLLATE NOCASE ASC LIMIT ?",
+            params,
+        ).fetchall()
+    return [{**dict(row), "verified": bool(row["verified"])} for row in rows]
+
+
+def create_glossary_term(
+    db_path: str | Path,
+    term: str,
+    definition: str,
+    source: str = "",
+    page: int | None = None,
+    category: str = "Umum",
+    verified: bool = False,
+) -> dict:
+    now = _now()
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO glossary_terms "
+            "(term, definition, source, page, category, verified, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (term.strip(), definition.strip(), source.strip(), page, category.strip() or "Umum",
+             int(verified), now, now),
+        )
+        term_id = cur.lastrowid
+    return get_glossary_term(db_path, int(term_id)) or {}
+
+
+def get_glossary_term(db_path: str | Path, term_id: int) -> dict | None:
+    with _conn(db_path) as conn:
+        row = conn.execute("SELECT * FROM glossary_terms WHERE id = ?", (term_id,)).fetchone()
+    if row is None:
+        return None
+    return {**dict(row), "verified": bool(row["verified"])}
+
+
+def update_glossary_term(
+    db_path: str | Path,
+    term_id: int,
+    term: str,
+    definition: str,
+    source: str = "",
+    page: int | None = None,
+    category: str = "Umum",
+    verified: bool = False,
+) -> dict | None:
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "UPDATE glossary_terms SET term = ?, definition = ?, source = ?, page = ?, "
+            "category = ?, verified = ?, updated_at = ? WHERE id = ?",
+            (term.strip(), definition.strip(), source.strip(), page, category.strip() or "Umum",
+             int(verified), _now(), term_id),
+        )
+    return get_glossary_term(db_path, term_id) if cur.rowcount else None
+
+
+def delete_glossary_term(db_path: str | Path, term_id: int) -> bool:
+    with _conn(db_path) as conn:
+        cur = conn.execute("DELETE FROM glossary_terms WHERE id = ?", (term_id,))
+    return cur.rowcount > 0
 
 
 # ----------------------------------------------------------------------
@@ -348,3 +478,196 @@ def delete_document_category_mapping(db_path: str | Path, source: str) -> None:
     with _conn(db_path) as conn:
         conn.execute("DELETE FROM document_categories WHERE source = ?", (source,))
 
+
+# ----------------------------------------------------------------------
+# Audit log (P0-02) — actor, action, status, durasi
+# ----------------------------------------------------------------------
+def record_audit(
+    db_path: str | Path,
+    actor: str,
+    action: str,
+    ip: str = "",
+    status: int = 200,
+    duration_ms: float = 0.0,
+) -> None:
+    """Catat satu aksi API yang terproteksi (idempotent-safe, jangan crash)."""
+    try:
+        with _conn(db_path) as conn:
+            conn.execute(
+                "INSERT INTO audit_log (ts, actor, action, ip, status, duration_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (_now(), actor[:120], action[:300], ip[:60], status, duration_ms),
+            )
+    except sqlite3.Error:
+        pass  # audit gagal tidak boleh menjatuhkan request
+
+
+def list_audit(db_path: str | Path, limit: int = 50) -> list[dict]:
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, ts, actor, action, ip, status, duration_ms "
+            "FROM audit_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ----------------------------------------------------------------------
+# Document registry (P1-01/P1-02) — source of truth lifecycle file/index
+# ----------------------------------------------------------------------
+def register_document(
+    db_path: str | Path,
+    source: str,
+    kind: str = "file",
+    job_id: str = "",
+    file_path: str = "",
+    checksum: str = "",
+    size_bytes: int = 0,
+    category: str = "Umum",
+    status: str = "queued",
+) -> dict:
+    """Daftarkan dokumen (atau mulai ulang versi barunya)."""
+    now = _now()
+    existing = get_document(db_path, source)
+    version = (existing.get("version") or 0) + 1 if existing else 1
+    with _conn(db_path) as conn:
+        conn.execute(
+            "INSERT INTO documents (source, job_id, kind, file_path, checksum, "
+            "size_bytes, category, status, chunks, error, version, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?) "
+            "ON CONFLICT(source) DO UPDATE SET "
+            "job_id = excluded.job_id, kind = excluded.kind, "
+            "file_path = excluded.file_path, checksum = excluded.checksum, "
+            "size_bytes = excluded.size_bytes, category = excluded.category, "
+            "status = excluded.status, error = '', "
+            "version = documents.version + 1, updated_at = excluded.updated_at",
+            (source, job_id, kind, file_path, checksum, size_bytes,
+             category, status, version, now, now),
+        )
+    return get_document(db_path, source) or {
+        "source": source, "status": status, "job_id": job_id, "version": version,
+    }
+
+
+def update_document_status(
+    db_path: str | Path,
+    source: str,
+    status: str,
+    *,
+    error: str = "",
+    chunks: int | None = None,
+    file_path: str | None = None,
+    checksum: str | None = None,
+    category: str | None = None,
+    job_id: str | None = None,
+) -> None:
+    sets = ["status = ?", "updated_at = ?"]
+    params: list = [status, _now()]
+    if error is not None:
+        sets.append("error = ?")
+        params.append(error)
+    if chunks is not None:
+        sets.append("chunks = ?")
+        params.append(chunks)
+    if file_path is not None:
+        sets.append("file_path = ?")
+        params.append(file_path)
+    if checksum is not None:
+        sets.append("checksum = ?")
+        params.append(checksum)
+    if category is not None:
+        sets.append("category = ?")
+        params.append(category)
+    if job_id is not None:
+        sets.append("job_id = ?")
+        params.append(job_id)
+    params.append(source)
+    with _conn(db_path) as conn:
+        conn.execute(
+            f"UPDATE documents SET {', '.join(sets)} WHERE source = ?", params
+        )
+
+
+def get_document(db_path: str | Path, source: str) -> dict | None:
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM documents WHERE source = ?", (source,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_document_by_job(db_path: str | Path, job_id: str) -> dict | None:
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM documents WHERE job_id = ?", (job_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_document_registry(db_path: str | Path) -> list[dict]:
+    with _conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM documents ORDER BY updated_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def purge_document(db_path: str | Path, source: str) -> None:
+    """Hapus baris registry (dipakai saat purge total dokumen)."""
+    with _conn(db_path) as conn:
+        conn.execute("DELETE FROM documents WHERE source = ?", (source,))
+
+
+# ----------------------------------------------------------------------
+# Retensi & clear-all (P0-03) — lifecycle data pribadi
+# ----------------------------------------------------------------------
+def purge_old_chats(db_path: str | Path, days: int) -> int:
+    """Hapus session + pesan yang tidak diakses selama `days` hari.
+
+    CASCADE menghapus messages & session_summaries. Return jumlah session
+    yang dihapus. dipanggil saat startup bila RETAIN_CHAT_DAYS > 0.
+    """
+    if days <= 0:
+        return 0
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    with _conn(db_path) as conn:
+        cur = conn.execute(
+            "DELETE FROM sessions WHERE updated_at < ?", (cutoff,)
+        )
+    return cur.rowcount
+
+
+def clear_all_user_data(db_path: str | Path) -> dict:
+    """Hapus SEMUA data pribadi: chat, ringkasan, anotasi, quiz, kartu.
+
+    Indeks dokumen (ChromaDB) TIDAK ikut dihapus di sini — gunakan
+    reset/delete per dokumen untuk itu.
+    """
+    tables = [
+        "sessions",            # cascade ke messages & session_summaries
+        "annotations",
+        "review_cards",
+        "flashcards",
+        "flashcard_stats",
+        "quiz_attempts",
+        "quiz_results",
+        "glossary_terms",
+    ]
+    deleted: dict[str, int] = {}
+    with _conn(db_path) as conn:
+        for t in tables:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (t,),
+            ).fetchone()
+            if exists:
+                cur = conn.execute(f"DELETE FROM {t}")
+                deleted[t] = cur.rowcount
+    return deleted
+
+
+def clear_semantic_cache_entries(db_path: str | Path) -> int:
+    """Kosongkan tabel cache jika ada (backend ChromaDB, bukan SQLite)."""
+    # Cache semantic tinggal di ChromaDB (collection query_cache), bukan
+    # SQLite — fungsi ini placeholder agar pemanggil tidak bergantung tabel.
+    return 0

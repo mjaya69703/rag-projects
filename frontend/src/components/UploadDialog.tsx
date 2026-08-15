@@ -52,6 +52,19 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
     return () => dialog.removeEventListener('cancel', onCancel)
   }, [onClose])
 
+  async function pollJob(jobId: string, timeoutMs = 100_000): Promise<{ chunks: number; source: string }> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const res = await api<{ job: { status: string; chunks: number; source: string; error?: string } }>(
+        `/jobs/${jobId}`,
+      )
+      if (res.job.status === 'ready') return { chunks: res.job.chunks, source: res.job.source }
+      if (res.job.status === 'error') throw new Error(res.job.error || 'Gagal mengindeks dokumen.')
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    throw new Error('Waktu tunggu indeks habis. Cek status di halaman Library.')
+  }
+
   async function submitFile(event: FormEvent) {
     event.preventDefault()
     if (!file) {
@@ -65,8 +78,17 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
       form.append('file', file)
       if (fileName.trim()) form.append('source', fileName.trim())
       if (fileCategory.trim()) form.append('category', fileCategory.trim())
-      const data = await api<{ chunks: number; source: string; category?: string }>('/upload', { method: 'POST', body: form })
-      toast(`${data.chunks} chunk dari “${data.source}” [${data.category || 'Umum'}] terindeks.`)
+      const data = await api<{ status: string; job_id?: string; source: string; category?: string; chunks?: number }>(
+        '/upload',
+        { method: 'POST', body: form },
+      )
+      if (data.status === 'ready') {
+        toast(`“${data.source}” sudah terindeks sebelumnya (tidak berubah).`)
+      } else if (data.job_id) {
+        setFileFeedback('Mengindeks dokumen…')
+        const done = await pollJob(data.job_id)
+        toast(`${done.chunks} chunk dari “${done.source}” [${data.category || 'Umum'}] terindeks.`)
+      }
       onUploaded()
       onClose()
     } catch (error) {
@@ -85,15 +107,24 @@ export function UploadDialog({ open, onClose, onUploaded }: Props) {
     setFetching(true)
     setUrlFeedback('Mengambil dan mengindeks URL…')
     try {
-      const data = await api<{ chunks: number; source: string; category?: string }>('/ingest-url', {
-        method: 'POST',
-        body: JSON.stringify({
-          url: url.trim(),
-          source: urlName.trim() || null,
-          category: urlCategory.trim() || null,
-        }),
-      })
-      toast(`${data.chunks} chunk dari “${data.source}” [${data.category || 'Umum'}] terindeks.`)
+      const data = await api<{ status: string; job_id?: string; source: string; category?: string; chunks?: number }>(
+        '/ingest-url',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            url: url.trim(),
+            source: urlName.trim() || null,
+            category: urlCategory.trim() || null,
+          }),
+        },
+      )
+      if (data.status === 'ready') {
+        toast(`“${data.source}” sudah terindeks sebelumnya (tidak berubah).`)
+      } else if (data.job_id) {
+        setUrlFeedback('Mengambil dan mengindeks URL…')
+        const done = await pollJob(data.job_id)
+        toast(`${done.chunks} chunk dari “${done.source}” [${data.category || 'Umum'}] terindeks.`)
+      }
       setUrl('')
       setUrlName('')
       setUrlCategory('')

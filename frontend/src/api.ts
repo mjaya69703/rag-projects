@@ -8,14 +8,27 @@ export class ApiError extends Error {
   }
 }
 
+// Event yang dipakai indikator status API (sidebar) untuk deteksi "degraded":
+// request aplikasi gagal walau /health masih ok.
+function dispatchApiError() {
+  window.dispatchEvent(new CustomEvent('kb:api-error'))
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
     ...((options.headers as Record<string, string>) || {}),
   }
-  const response = await fetch(path, { ...options, headers })
+  let response: Response
+  try {
+    response = await fetch(path, { ...options, headers })
+  } catch (error) {
+    dispatchApiError()
+    throw error
+  }
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
+    dispatchApiError()
     throw new ApiError((body as { detail?: string }).detail || `HTTP ${response.status}`, response.status)
   }
   return body as T
@@ -126,4 +139,24 @@ export interface LearningStats {
   total: number
   due_today: number
   avg_lapses: number
+}
+
+export interface PrivacyInfo {
+  provider_label: string
+  external_data_flow: string
+  redaction_enabled: boolean
+  retention_days: number
+  disclosure_text: string
+}
+
+export interface GlossaryTerm {
+  id: number
+  term: string
+  definition: string
+  source: string
+  page: number | null
+  category: string
+  verified: boolean
+  created_at: string
+  updated_at: string
 }

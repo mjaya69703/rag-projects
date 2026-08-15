@@ -1,5 +1,7 @@
 # Development Flow
 
+> 📌 **Catatan status (2026-08-09):** Dokumen ini adalah **log pengembangan sprint** yang sudah mengikuti stack aktual (React 19/Bun SPA, semantic cache custom, hybrid search) — sebutan Streamlit/GPTCache di dalamnya adalah catatan *transisi yang sudah terjadi*, bukan instruksi. Status sprint terkini ada di [`.agents/00_PROJECT_OVERVIEW.md`](../.agents/00_PROJECT_OVERVIEW.md); roadmap sisa pekerjaan di [`.agents/07_ROADMAP.md`](../.agents/07_ROADMAP.md).
+
 ## 📋 Prinsip Pengembangan
 1. **Modular:** Setiap fitur dibuat dalam modul terpisah.
 2. **Testable:** Setiap modul bisa di-test secara independen.

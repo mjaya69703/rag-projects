@@ -14,6 +14,8 @@
 | 6 | Deployment & Security (Cloudflare Tunnel) | 🔶 artefak siap di `deploy/`, deploy nyata menyusul |
 | 7 | Learning loop (15 fitur), custom modals 100%, loading indicators | ✅ selesai 100% |
 
+> 📌 **Audit 2026-08-09:** lihat `.docs/PROJECT_AUDIT_2026-08-09.md` — status "selesai 100%" berarti implementasi fitur, bukan berarti terverifikasi produksi. Ringkasan implemented/verified/not-verified ada di `.agents/README.md`.
+
 ## Fitur Utama Sistem
 - **Multi-Format Ingest**: PDF, MD, TXT, DOCX, PPTX, HTML, URL, & Watch-Folder auto-index (`uploads/`).
 - **Hybrid Search**: BM25 keyword matching + ChromaDB vector similarity.

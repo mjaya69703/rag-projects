@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS review_cards (
     last_reviewed TEXT,
     next_due      TEXT NOT NULL,
     interval_days INTEGER NOT NULL DEFAULT 1,
-    lapses        INTEGER NOT NULL DEFAULT 0
+    lapses        INTEGER NOT NULL DEFAULT 0,
+    ease_factor   REAL NOT NULL DEFAULT 2.5,
+    repetitions   INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS quiz_scores (
@@ -37,6 +39,16 @@ CREATE TABLE IF NOT EXISTS quiz_scores (
     score      INTEGER NOT NULL,
     total      INTEGER NOT NULL,
     created_at TEXT NOT NULL
+);
+
+-- Attempt kuis server-side (P2-04): soal + kunci jawaban disimpan di
+-- server, skor dihitung deterministik — LLM tidak menentukan nilai.
+CREATE TABLE IF NOT EXISTS quiz_attempts (
+    id              TEXT PRIMARY KEY,
+    source          TEXT,
+    questions_json  TEXT NOT NULL,
+    answer_key_json TEXT NOT NULL,
+    created_at      TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS flashcard_stats (
@@ -48,13 +60,38 @@ CREATE TABLE IF NOT EXISTS flashcard_stats (
 );
 """
 
+# Konstanta SM-2 (P2-03): ease factor, interval per repetition count.
+SM2_MIN_EASE = 1.3
+SM2_INITIAL_EASE = 2.5
+SM2_EASE_INC = 0.1
+SM2_EASE_DEC = 0.2
+# Interval (hari) setelah repetition ke-1 dan ke-2; berikutnya interval * ease.
+SM2_INTERVALS = {1: 1, 2: 6}
+
 
 def _conn_learning(db_path: str | Path) -> sqlite3.Connection:
     """Koneksi SQLite dengan schema learning dijamin ada (idempotent)."""
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.executescript(LEARNING_SCHEMA)
+    _migrate_review_cards(conn)
     return conn
+
+
+def _migrate_review_cards(conn: sqlite3.Connection) -> None:
+    """Tambah kolom SM-2 (ease_factor, repetitions) ke DB lama (idempotent)."""
+    cols = {
+        r["name"]
+        for r in conn.execute("PRAGMA table_info(review_cards)").fetchall()
+    }
+    if "ease_factor" not in cols:
+        conn.execute(
+            "ALTER TABLE review_cards ADD COLUMN ease_factor REAL NOT NULL DEFAULT 2.5"
+        )
+    if "repetitions" not in cols:
+        conn.execute(
+            "ALTER TABLE review_cards ADD COLUMN repetitions INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def ensure_tables(db_path: str | Path) -> None:
@@ -102,11 +139,34 @@ def due_cards(db_path: str | Path, limit: int = 10) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def answer_card(db_path: str | Path, card_id: str, remembered: bool) -> dict:
-    """Catat hasil review satu kartu, lalu kembalikan kartu yang ter-update.
+def _sm2_schedule(row: sqlite3.Row, remembered: bool) -> tuple[int, int, float]:
+    """(interval_days, repetitions, ease_factor) menurut SM-2 (P2-03).
 
-    remembered: interval naik 2x (min 1 hari), lapses di-reset ke 0.
-    forgotten : interval kembali ke 1 hari, lapses +1.
+    - Ingat: repetitions +1; interval 1 hari (rep 1), 6 hari (rep 2),
+      lalu round(interval * ease); ease naik +0.1 (min 1.3).
+    - Lupa : repetitions reset ke 0, interval kembali 1 hari, ease turun
+      -0.2 (min 1.3). Lapses dihitung di pemanggil.
+    """
+    ease = float(row["ease_factor"] or SM2_INITIAL_EASE)
+    reps = int(row["repetitions"] or 0)
+    if remembered:
+        reps += 1
+        if reps == 1:
+            interval = SM2_INTERVALS[1]
+        elif reps == 2:
+            interval = SM2_INTERVALS[2]
+        else:
+            interval = round(max(1, int(row["interval_days"] or 1) * ease))
+        ease = max(SM2_MIN_EASE, ease + SM2_EASE_INC)
+        return interval, reps, ease
+    return 1, 0, max(SM2_MIN_EASE, ease - SM2_EASE_DEC)
+
+
+def answer_card(db_path: str | Path, card_id: str, remembered: bool) -> dict:
+    """Catat hasil review satu kartu (scheduler SM-2), kembalikan kartu baru.
+
+    remembered: interval/ease naik sesuai SM-2; lapses di-reset ke 0.
+    forgotten : interval kembali 1 hari, repetitions reset, lapses +1.
     """
     now = _now()
     with _conn_learning(db_path) as conn:
@@ -115,17 +175,14 @@ def answer_card(db_path: str | Path, card_id: str, remembered: bool) -> dict:
         ).fetchone()
         if row is None:
             raise ValueError(f"Kartu tidak ditemukan: {card_id}")
-        if remembered:
-            interval = max(1, row["interval_days"] * 2)
-            lapses = 0
-        else:
-            interval = 1
-            lapses = row["lapses"] + 1
+        interval, reps, ease = _sm2_schedule(row, remembered)
+        lapses = row["lapses"] if remembered else row["lapses"] + 1
         next_due = (datetime.now(UTC) + timedelta(days=interval)).isoformat()
         conn.execute(
-            "UPDATE review_cards SET interval_days = ?, lapses = ?, "
-            "last_reviewed = ?, next_due = ? WHERE card_id = ?",
-            (interval, lapses, now, next_due, card_id),
+            "UPDATE review_cards SET interval_days = ?, repetitions = ?, "
+            "ease_factor = ?, lapses = ?, last_reviewed = ?, next_due = ? "
+            "WHERE card_id = ?",
+            (interval, reps, ease, lapses, now, next_due, card_id),
         )
         updated = conn.execute(
             "SELECT * FROM review_cards WHERE card_id = ?", (card_id,)
@@ -152,11 +209,14 @@ def card_stats(db_path: str | Path) -> dict:
 # #2 Weak-spot detection
 # ----------------------------------------------------------------------
 def weak_spots(db_path: str | Path, limit: int = 8) -> list[dict]:
-    """Topik paling lemah: frekuensi tanya ulang + lapses kartu.
+    """Topik paling lemah: frekuensi tanya ulang + bukti salah jawab nyata.
 
-    Skor = asked + lapses*2 + wrong*3. Data quiz saat ini hanya
-    tersimpan agregat per kuis (tanpa mapping per topik), jadi komponen
-    ``wrong`` selalu 0 — kolom dipertahankan untuk integrator.
+    Komponen ``wrong`` sekarang terisi sungguhan (P2-03) dari tiga sumber:
+    - lapses kartu review (lupa saat spaced repetition)
+    - jawaban "belum tahu" pada flashcard
+    - jawaban salah pada kuis (per source)
+
+    Skor = asked + lapses*2 + wrong*3.
     """
     entries: dict[str, dict] = {}
     for row in db.repeated_questions(db_path):
@@ -177,13 +237,93 @@ def weak_spots(db_path: str | Path, limit: int = 8) -> list[dict]:
             key,
             {"topic": card["question"], "asked": 0, "lapses": 0, "wrong": 0},
         )
-        entry["lapses"] = card["lapses"]
+        entry["lapses"] += card["lapses"]
+        entry["wrong"] += card["lapses"]  # lupa = bukti lemah, bukan 0
+
+    with _conn_learning(db_path) as conn:
+        fcards = conn.execute(
+            "SELECT heading, source, known_count, unknown_count "
+            "FROM flashcard_stats"
+        ).fetchall()
+    for f in fcards:
+        topic = f"{f['heading']} ({f['source']})"
+        entry = entries.setdefault(
+            topic.lower(),
+            {"topic": topic, "asked": 0, "lapses": 0, "wrong": 0},
+        )
+        entry["asked"] += f["known_count"] + f["unknown_count"]
+        entry["wrong"] += f["unknown_count"]
+
+    with _conn_learning(db_path) as conn:
+        quizes = conn.execute(
+            "SELECT source, score, total FROM quiz_scores WHERE source IS NOT NULL"
+        ).fetchall()
+    for q in quizes:
+        topic = f"Quiz: {q['source']}"
+        entry = entries.setdefault(
+            topic.lower(),
+            {"topic": topic, "asked": 0, "lapses": 0, "wrong": 0},
+        )
+        entry["asked"] += q["total"]
+        entry["wrong"] += max(0, q["total"] - q["score"])
+
     for entry in entries.values():
         entry["score"] = entry["asked"] + entry["lapses"] * 2 + entry["wrong"] * 3
-    ranked = sorted(
-        entries.values(), key=lambda e: (-e["score"], e["topic"])
-    )
+    ranked = sorted(entries.values(), key=lambda e: (-e["score"], e["topic"]))
     return ranked[:limit]
+
+
+def mastery_stats(db_path: str | Path) -> list[dict]:
+    """Mastery per source: exposure vs correctness vs mastery (P2-03).
+
+    Membedakan metrik exposure (berapa sering diuji) dan correctness
+    (berapa benar) — bukan cuma "sering ditanya". Mastery = benar / total.
+    """
+    stats: dict[str, dict] = {}
+
+    def bump(source: str, asked: int = 0, correct: int = 0, wrong: int = 0) -> None:
+        entry = stats.setdefault(
+            source, {"exposure": 0, "correct": 0, "wrong": 0, "mastery": 0.0}
+        )
+        entry["exposure"] += asked
+        entry["correct"] += correct
+        entry["wrong"] += wrong
+
+    with _conn_learning(db_path) as conn:
+        for f in conn.execute(
+            "SELECT source, known_count, unknown_count FROM flashcard_stats"
+        ).fetchall():
+            bump(
+                f["source"] or "Umum",
+                asked=f["known_count"] + f["unknown_count"],
+                correct=f["known_count"],
+                wrong=f["unknown_count"],
+            )
+        for q in conn.execute(
+            "SELECT source, score, total FROM quiz_scores"
+        ).fetchall():
+            bump(
+                q["source"] or "Umum",
+                asked=q["total"],
+                correct=q["score"],
+                wrong=max(0, q["total"] - q["score"]),
+            )
+        for c in conn.execute(
+            "SELECT source, lapses, repetitions FROM review_cards"
+        ).fetchall():
+            bump(
+                c["source"] or "Umum",
+                asked=max(int(c["repetitions"] or 0), 1),
+                wrong=int(c["lapses"] or 0),
+            )
+
+    out = []
+    for source, s in stats.items():
+        answered = s["correct"] + s["wrong"]
+        s["mastery"] = round(s["correct"] / answered, 2) if answered else 0.0
+        out.append({"source": source, **s})
+    out.sort(key=lambda e: (e["mastery"], -e["exposure"]))
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -432,6 +572,82 @@ def save_quiz_score(
         "score": score,
         "total": total,
         "created_at": now,
+    }
+
+
+def create_quiz_attempt(
+    db_path: str | Path, source: str | None, questions: list[dict]
+) -> dict:
+    """Terbitkan paket kuis server-side (P2-04).
+
+    Soal + kunci jawaban (answer_index) disimpan di server. Client hanya
+    menerima soal TANPA kunci; skor dihitung deterministik dari kunci.
+    Return {"attempt_id", "source", "questions": [tanpa answer_index]}.
+    """
+    attempt_id = uuid.uuid4().hex
+    safe = [
+        {
+            "question": q.get("question"),
+            "options": list(q.get("options") or []),
+        }
+        for q in questions
+    ]
+    key = [int(q.get("answer_index", 0)) for q in questions]
+    with _conn_learning(db_path) as conn:
+        conn.execute(
+            "INSERT INTO quiz_attempts (id, source, questions_json, "
+            "answer_key_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            (attempt_id, source, json.dumps(safe, ensure_ascii=False),
+             json.dumps(key, ensure_ascii=False), _now()),
+        )
+    return {"attempt_id": attempt_id, "source": source, "questions": safe}
+
+
+def grade_quiz_attempt(
+    db_path: str | Path, attempt_id: str, answers: list[int]
+) -> dict:
+    """Koreksi kuis DETERMINISTIK dari kunci tersimpan (P2-04).
+
+    LLM tidak menentukan skor (skor selalu cocok dengan detail per soal).
+    Hasil dicatat ke quiz_scores untuk riwayat/mastery. LLM hanya boleh
+    dipakai untuk penjelasan di lapisan di atas fungsi ini.
+
+    Raises:
+        ValueError: attempt tidak dikenal / jumlah jawaban tidak cocok.
+    """
+    with _conn_learning(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM quiz_attempts WHERE id = ?", (attempt_id,)
+        ).fetchone()
+    if row is None:
+        raise ValueError("Attempt kuis tidak ditemukan.")
+    try:
+        questions = json.loads(row["questions_json"] or "[]")
+        key = json.loads(row["answer_key_json"] or "[]")
+    except json.JSONDecodeError as exc:
+        raise ValueError("Data attempt kuis rusak.") from exc
+
+    if len(answers) != len(questions):
+        raise ValueError(
+            f"Jumlah jawaban ({len(answers)}) != jumlah soal ({len(questions)})."
+        )
+
+    details = [
+        {
+            "question": (q or {}).get("question", ""),
+            "correct": (answers[i] == key[i]) if i < len(key) else False,
+            "correct_index": key[i] if i < len(key) else -1,
+        }
+        for i, q in enumerate(questions)
+    ]
+    score = sum(1 for d in details if d["correct"])
+    total = len(questions)
+    save_quiz_score(db_path, row["source"], score, total)
+    return {
+        "score": score,
+        "total": total,
+        "correct": [i for i, d in enumerate(details) if d["correct"]],
+        "details": details,
     }
 
 

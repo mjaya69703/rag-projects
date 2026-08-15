@@ -18,8 +18,12 @@ Internet ──> Cloudflare Access (email allowlist) ──> cloudflared (tunnel
   server terpisah (tidak ada port 3000).
 - Service hanya bind ke `127.0.0.1:8000`. Cloudflare Tunnel (`cloudflared`)
   adalah satu-satunya jalan keluar ke publik.
-- Aplikasi **tidak punya autentikasi sendiri** — Cloudflare Access adalah
-  satu-satunya gerbang (cocok untuk pemakaian single-user).
+- Aplikasi punya **API token opsional** (`API_TOKEN` di `.env`, fitur P0-02):
+  kalau diisi, semua endpoint API butuh `Authorization: Bearer <token>`.
+  **Web UI (SPA) belum mengirim token** — jadi pada deploy LXC ini biarkan
+  `API_TOKEN` **kosong** dan jadikan **Cloudflare Access satu-satunya gerbang**
+  (cocok untuk pemakaian single-user). Token hanya berguna untuk akses
+  API/CLI (curl, MCP, bot) bila nanti diinginkan.
 
 ## Prasyarat
 
@@ -123,6 +127,7 @@ upload PDF dan bertanya. Maka Access WAJIB dipasang.
    | `LOG_DIR`       | Tidak | *(kosong)*                | Folder log file (RotatingFileHandler); kosong = log ke console saja |
    | `CORS_ORIGINS`  | Tidak | `localhost/127.0.0.1:3000,8000` | Whitelist origin CORS (koma); `*` = semua (tanpa credentials) |
    | `RATE_LIMIT_QPM`| Tidak | `30`                      | Rate limit per menit per IP utk `/query` & `/upload`; `0` = nonaktif |
+   | `API_TOKEN`     | Tidak | *(kosong)*                | Token Bearer utk endpoint API; **kosongkan di LXC** (SPA belum mengirim token — Cloudflare Access yang jadi gerbang) |
 
    Contoh minimal:
 

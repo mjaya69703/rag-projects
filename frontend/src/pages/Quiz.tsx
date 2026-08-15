@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type DocumentInfo, type QuizHistoryItem, type QuizQuestion } from '../api'
 import { Icon } from '../components/Icon'
 import { usePageHeader } from '../components/PageHeader'
@@ -19,6 +19,7 @@ export default function Quiz() {
   const [source, setSource] = useState('')
   const [count, setCount] = useState(5)
   const [questions, setQuestions] = useState<QuizQuestion[]>([])
+  const [attemptId, setAttemptId] = useState('')
   const [answers, setAnswers] = useState<Record<number, number>>({})
   const [details, setDetails] = useState<GradeDetail[] | null>(null)
   const [feedback, setFeedback] = useState('')
@@ -69,12 +70,14 @@ export default function Quiz() {
     setLoading(true)
     setDetails(null)
     setFeedback('')
+    setAttemptId('')
     try {
-      const data = await api<{ questions: QuizQuestion[] }>('/learning/quiz/generate', {
+      const data = await api<{ attempt_id: string; questions: QuizQuestion[] }>('/learning/quiz/generate', {
         method: 'POST',
         body: JSON.stringify({ source: source || null, n }),
       })
       setQuestions(data.questions || [])
+      setAttemptId(data.attempt_id)
       setAnswers({})
       toast(`Berhasil membuat ${data.questions.length} soal latihan. Selamat mengerjakan!`)
     } catch (error) {
@@ -86,7 +89,7 @@ export default function Quiz() {
   }
 
   async function grade() {
-    if (questions.length === 0 || grading) return
+    if (questions.length === 0 || grading || !attemptId) return
     const selected = questions.map((_, i) => answers[i] ?? -1)
     if (selected.some((a) => a < 0)) {
       toast('Harap dijawab semua soal terlebih dahulu sebelum dikoreksi.')
@@ -96,7 +99,7 @@ export default function Quiz() {
     try {
       const data = await api<{ score: number; total: number; feedback: string; details: GradeDetail[] }>(
         '/learning/quiz/grade',
-        { method: 'POST', body: JSON.stringify({ questions, answers: selected }) },
+        { method: 'POST', body: JSON.stringify({ attempt_id: attemptId, answers: selected }) },
       )
       setDetails(data.details || [])
       setFeedback(data.feedback)

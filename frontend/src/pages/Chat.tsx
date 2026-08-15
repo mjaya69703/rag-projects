@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { api, type Message, type SourceRef } from '../api'
 import { useSessions } from '../context/SessionsContext'
-import { Dialog } from '../components/Dialog'
+import { Icon } from '../components/Icon'
 import { Markdown } from '../components/Markdown'
 import { usePageHeader } from '../components/PageHeader'
 import { SourceAccordion, useAnnotationLoader } from '../components/SourceCard'
 import { useToast } from '../components/Toast'
-import { UploadDialog } from '../components/UploadDialog'
 
 interface StreamEvent {
   type: 'meta' | 'delta' | 'done' | 'error'
@@ -92,7 +91,6 @@ function MessageItem({
 /** Halaman utama: chat (streaming) — sidebar & topbar di AppLayout. */
 export default function Chat() {
   const toast = useToast()
-  const navigate = useNavigate()
   const { annotations, loadAnnotations } = useAnnotationLoader()
   const {
     sessions,
@@ -117,8 +115,6 @@ export default function Chat() {
   const [mode, setMode] = useState('sliding')
   const [topK, setTopK] = useState(5)
   const [emptyHidden, setEmptyHidden] = useState(false)
-  const [uploadOpen, setUploadOpen] = useState(false)
-  const [commandOpen, setCommandOpen] = useState(false)
 
   const chatRegionRef = useRef<HTMLElement>(null)
   const questionRef = useRef<HTMLTextAreaElement>(null)
@@ -149,17 +145,6 @@ export default function Chat() {
       .catch(() => setCategories([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId])
-
-  useEffect(() => {
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault()
-        setCommandOpen(true)
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [])
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => chatRegionRef.current?.scrollTo({ top: chatRegionRef.current.scrollHeight }))
@@ -426,33 +411,6 @@ export default function Chat() {
           </p>
         </div>
       </section>
-
-      <UploadDialog open={uploadOpen} onClose={() => setUploadOpen(false)} onUploaded={() => void refreshAll()} />
-
-      <Dialog open={commandOpen} onClose={() => setCommandOpen(false)}>
-        <div className="command-card">
-          <p className="command-heading">AKSI CEPAT</p>
-          <div className="command-options">
-            <button type="button" onClick={() => { setCommandOpen(false); void createSession(); }}>
-              <span><svg className="icon" aria-hidden="true"><use href="#i-chat" /></svg> Chat baru</span>
-            </button>
-            <button type="button" onClick={() => { setCommandOpen(false); setUploadOpen(true); }}>
-              <span><svg className="icon" aria-hidden="true"><use href="#i-upload" /></svg> Unggah dokumen</span>
-            </button>
-            {[
-              { to: '/library', label: 'Library', icon: 'i-file' },
-              { to: '/quiz', label: 'Quiz', icon: 'i-quiz' },
-              { to: '/flashcards', label: 'Flashcards', icon: 'i-card' },
-              { to: '/progress', label: 'Progress', icon: 'i-chart' },
-              { to: '/settings', label: 'Settings', icon: 'i-theme' },
-            ].map((item) => (
-              <button key={item.to} type="button" onClick={() => { setCommandOpen(false); navigate(item.to); }}>
-                <span><svg className="icon" aria-hidden="true"><use href={`#${item.icon}`} /></svg> {item.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </Dialog>
     </>
   )
 }

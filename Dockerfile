@@ -25,10 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy & install Python requirements (PyTorch CPU-only)
+# Copy & install Python requirements (PyTorch CPU-only).
+# torch diinstall duluan dari index CPU; sentence-transformers lalu
+# memakainya tanpa menarik build CUDA raksasa dari PyPI.
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
+    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy backend application code
 COPY app/ ./app/

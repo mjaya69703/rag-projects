@@ -61,24 +61,31 @@ def test_sync_due_answer_cards(tmp_path: Path) -> None:
     card = due[0]
     assert card["question"] == "Apa itu VLAN?"
     assert card["interval_days"] == 1 and card["lapses"] == 0
+    assert card["repetitions"] == 0 and card["ease_factor"] == 2.5
     assert card["last_reviewed"] is None
 
     stats = learning.card_stats(path)
     assert stats["total"] == 1 and stats["due_today"] == 1 and stats["avg_lapses"] == 0.0
 
-    # remembered: interval naik 2x, lapses reset
+    # SM-2 (P2-03): ingat pertama -> reps 1, interval 1, ease naik
     c2 = learning.answer_card(path, card["card_id"], remembered=True)
-    assert c2["interval_days"] == 2 and c2["lapses"] == 0
+    assert c2["interval_days"] == 1 and c2["repetitions"] == 1
+    assert c2["ease_factor"] == 2.6 and c2["lapses"] == 0
     assert c2["last_reviewed"] is not None
     assert learning.due_cards(path) == [], "kartu yang baru dijawab belum due"
 
-    # forgotten: interval reset ke 1, lapses +1
-    c3 = learning.answer_card(path, card["card_id"], remembered=False)
-    assert c3["interval_days"] == 1 and c3["lapses"] == 1
+    # ingat kedua -> reps 2, interval 6 hari
+    c2b = learning.answer_card(path, card["card_id"], remembered=True)
+    assert c2b["interval_days"] == 6 and c2b["repetitions"] == 2
 
-    # remembered lagi setelah lupa: 1*2 = 2, lapses reset
+    # lupa -> reps reset 0, interval 1, lapses +1, ease turun (2.7 -> 2.5)
+    c3 = learning.answer_card(path, card["card_id"], remembered=False)
+    assert c3["interval_days"] == 1 and c3["repetitions"] == 0
+    assert c3["lapses"] == 1 and c3["ease_factor"] == 2.5
+
+    # ingat lagi setelah lupa -> mulai dari rep 1; lapses kumulatif tetap 1
     c4 = learning.answer_card(path, card["card_id"], remembered=True)
-    assert c4["interval_days"] == 2 and c4["lapses"] == 0
+    assert c4["interval_days"] == 1 and c4["repetitions"] == 1 and c4["lapses"] == 1
 
     try:
         learning.answer_card(path, "tidak-ada", remembered=True)
@@ -104,10 +111,29 @@ def test_weak_spots_ordering(tmp_path: Path) -> None:
     assert len(spots) == 2
     top = spots[0]
     assert "routing" in top["topic"], "lupa berulang harus jadi weak spot teratas"
-    assert top["asked"] == 2 and top["lapses"] == 2 and top["wrong"] == 0
-    assert top["score"] == 2 + 2 * 2, "skor = asked + lapses*2 + wrong*3"
+    # P2-03: wrong terisi nyata dari lapses (bukan 0)
+    assert top["asked"] == 2 and top["lapses"] == 2 and top["wrong"] == 2
+    assert top["score"] == 2 + 2 * 2 + 2 * 3, "skor = asked + lapses*2 + wrong*3"
 
     assert learning.weak_spots(path, limit=1)[0]["topic"] == top["topic"]
+
+
+def test_mastery_stats(tmp_path: Path) -> None:
+    """P2-03: exposure vs correctness vs mastery per source."""
+    path = tmp_path / "mastery.db"
+    db.init_db(path)
+    learning.answer_flashcard(path, "VLAN", "a.pdf", known=True)
+    learning.answer_flashcard(path, "VLAN", "a.pdf", known=False)
+    learning.save_quiz_score(path, "a.pdf", 4, 5)
+
+    mastery = learning.mastery_stats(path)
+    by_source = {m["source"]: m for m in mastery}
+    assert "a.pdf" in by_source
+    a = by_source["a.pdf"]
+    assert a["exposure"] == 7  # 2 flashcard + 5 soal quiz
+    assert a["correct"] == 5   # 1 flashcard + 4 quiz
+    assert a["wrong"] == 2     # 1 flashcard + 1 quiz
+    assert a["mastery"] == round(5 / 7, 2)
 
 
 def test_document_progress_from_messages(tmp_path: Path) -> None:
@@ -227,6 +253,44 @@ def test_grade_quiz_parse(tmp_path: Path) -> None:
         store.close()
 
 
+def test_quiz_attempt_server_side(tmp_path: Path) -> None:
+    """P2-04: skor dihitung deterministik dari kunci server-side."""
+    path = tmp_path / "attempt.db"
+    db.init_db(path)
+    questions = [
+        {"question": "Q1", "options": ["a", "b", "c", "d"], "answer_index": 0},
+        {"question": "Q2", "options": ["a", "b", "c", "d"], "answer_index": 1},
+        {"question": "Q3", "options": ["a", "b", "c", "d"], "answer_index": 2},
+    ]
+    attempt = learning.create_quiz_attempt(path, "materi.pdf", questions)
+    assert attempt["attempt_id"]
+    # kunci tidak boleh bocor ke client
+    assert all("answer_index" not in q for q in attempt["questions"])
+
+    result = learning.grade_quiz_attempt(path, attempt["attempt_id"], [0, 9, 2])
+    assert result["score"] == 2 and result["total"] == 3
+    assert result["correct"] == [0, 2]
+    assert [d["correct"] for d in result["details"]] == [True, False, True]
+
+    # hasil tercatat ke history
+    history = learning.quiz_history(path)
+    assert history[0]["score"] == 2 and history[0]["source"] == "materi.pdf"
+
+    # attempt tidak dikenal -> error
+    try:
+        learning.grade_quiz_attempt(path, "tidak-ada", [0])
+        raise AssertionError("attempt tidak dikenal harus error")
+    except ValueError:
+        pass
+
+    # jumlah jawaban tidak cocok -> error
+    try:
+        learning.grade_quiz_attempt(path, attempt["attempt_id"], [0])
+        raise AssertionError("jumlah jawaban tidak cocok harus error")
+    except ValueError:
+        pass
+
+
 def test_flashcard_answer_and_stats(tmp_path: Path) -> None:
     """Tahu/belum flashcard tercatat & statistik urut paling sering salah."""
     path = tmp_path / "learn.db"
@@ -287,6 +351,8 @@ def main() -> None:
         test_document_progress_from_messages(tmp_path)
         test_generate_quiz_json_and_fallback(tmp_path)
         test_grade_quiz_parse(tmp_path)
+        test_quiz_attempt_server_side(tmp_path)
+        test_mastery_stats(tmp_path)
         test_flashcard_answer_and_stats(tmp_path)
         test_quiz_history(tmp_path)
         test_flashcards_from_store(tmp_path)

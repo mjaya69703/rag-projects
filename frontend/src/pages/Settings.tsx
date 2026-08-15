@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, type PrivacyInfo } from '../api'
 import { Icon } from '../components/Icon'
 import { usePageHeader } from '../components/PageHeader'
 import { useToast } from '../components/Toast'
@@ -17,6 +17,7 @@ export default function Settings() {
   const [metrics, setMetrics] = useState<Metrics | null>(null)
   const [health, setHealth] = useState<string>('')
   const [docCount, setDocCount] = useState<number | null>(null)
+  const [privacy, setPrivacy] = useState<PrivacyInfo | null>(null)
   const [theme, setTheme] = useState(() => (localStorage.getItem('kb-theme') === 'light' ? 'light' : 'dark'))
 
   usePageHeader({ eyebrow: 'KONFIGURASI & SISTEM', title: 'Settings & Metrics' })
@@ -37,6 +38,27 @@ export default function Settings() {
       }
     })()
   }, [toast])
+
+  // Info privasi dipisah agar kegagalan /privacy/info tidak mengganggu metrik lain.
+  useEffect(() => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 4000)
+    void (async () => {
+      try {
+        const res = await fetch('/privacy/info', { signal: controller.signal })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        setPrivacy((await res.json()) as PrivacyInfo)
+      } catch {
+        setPrivacy(null)
+      } finally {
+        clearTimeout(timer)
+      }
+    })()
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [])
 
   function toggleTheme() {
     const next = theme === 'light' ? 'dark' : 'light'

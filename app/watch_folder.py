@@ -71,6 +71,8 @@ def scan_pending(upload_dir: str | Path, indexed_sources: set[str]) -> list[Path
         if p.is_file()
         and p.suffix.lower() in SUPPORTED_EXTENSIONS
         and p.name not in indexed
+        # Lewati folder tersembunyi (mis. .staging untuk upload asinkron).
+        and not any(part.startswith(".") for part in p.relative_to(upload_dir).parts[:-1])
     ]
     pending.sort(key=lambda p: (p.stat().st_mtime, p.name))
     return pending

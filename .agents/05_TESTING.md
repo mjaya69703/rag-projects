@@ -1,5 +1,7 @@
 # 05 — Testing & Run
 
+> ⚠️ **Catatan verifikasi (2026-08-09, audit `.docs/PROJECT_AUDIT_2026-08-09.md`):** angka "106 passed" di bawah adalah hasil di mesin dev (07-08-2026) dan **belum terverifikasi ulang penuh** di environment audit — subset parser/database/ingestion lulus (47 pass), tapi suite API gagal di audit karena model embedding mencoba akses Hugging Face, dan `bun run build` gagal karena EPERM pada `frontend/node_modules/picomatch/index.js`. Jangan mengklaim "semua test pass" tanpa menjalankannya sendiri.
+
 ## Menjalankan Backend Unit Tests
 ```cmd
 .venv\Scripts\python -m pytest tests\ -q

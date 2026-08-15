@@ -21,9 +21,14 @@ bun run build
 
 ### Menjalankan via Docker Compose:
 ```bash
+# 1. Siapkan konfigurasi (wajib sekali) — salin lalu isi LLM_API_KEY / LLM_API_BASE / LLM_MODEL
+cp .env.example .env
+
+# 2. Build & jalankan
 docker compose up -d --build
 ```
 > Buka browser di **`http://localhost:8000`**
+> **Catatan:** pada first run, container mengunduh model embedding MiniLM (~90 MB) dari HuggingFace, jadi butuh koneksi internet.
 
 ---
 

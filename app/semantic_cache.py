@@ -124,6 +124,23 @@ class SemanticCache:
             self.collection.delete(ids=ids)
         return len(ids)
 
+    def purge_older_than(self, days: int) -> int:
+        """Hapus entri cache yang lebih tua dari `days` hari (retensi P0-03)."""
+        if days <= 0:
+            return 0
+        cutoff = int(time.time()) - days * 86400
+        result = self.collection.get(include=["metadatas"])
+        ids = result.get("ids") or []
+        metadatas = result.get("metadatas") or []
+        stale = [
+            ids[i]
+            for i in range(len(ids))
+            if metadatas[i].get("created_at", 0) < cutoff
+        ]
+        if stale:
+            self.collection.delete(ids=stale)
+        return len(stale)
+
     # ------------------------------------------------------------------
     def _evict_if_needed(self) -> None:
         """Buang entri tertua jika cache melebihi batas max_size."""

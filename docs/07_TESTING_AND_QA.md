@@ -1,5 +1,12 @@
 # Testing & QA Guide
 
+> 📌 **Status verifikasi (2026-08-09, berdasar [`.docs/PROJECT_AUDIT_2026-08-09.md`](../.docs/PROJECT_AUDIT_2026-08-09.md)):**
+> - ✅ Subset parser/database/ingestion: **47 test pass** (dengan `--basetemp .pytest-tmp`) — diverifikasi ulang saat audit.
+> - ⚠️ Suite API: **belum dapat dinyatakan pass** di environment audit (gagal saat model embedding mencoba akses Hugging Face).
+> - ⚠️ Frontend build (`bun run build`): **belum dapat dinyatakan pass** di environment audit (EPERM membuka `frontend/node_modules/picomatch/index.js`).
+> - ❌ Belum ada: browser E2E (upload→query→citation→delete, session, learning), security tests (SSRF/auth), latency & RAM benchmark, LLM tests penuh.
+> - Checklist di bawah mencerminkan rencana QA historis; jangan menganggap item yang masih unchecked sebagai sudah terverifikasi.
+
 ## 🧪 Testing Strategy
 
 ### 1. Unit Testing (Per Modul)
@@ -47,7 +54,9 @@
 - [ ] Akses tanpa Cloudflare Access → ditolak
 - [ ] Akses dengan email yang di-allow → diterima
 - [ ] API key tidak terekspos di frontend
-- [ ] File upload dibatasi (max size, hanya PDF)
+- [ ] File upload dibatasi (max size; validasi ekstensi: PDF, MD, TXT, DOCX, PPTX, HTML, URL)
+- [ ] SSRF protection pada ingest URL (blokir IP private/loopback/metadata, validasi redirect) — *in progress (2026-08-09), lihat audit P0-01*
+- [ ] Auth aplikasi (token) → endpoint mutasi/data menolak request tanpa kredensial — *in progress (2026-08-09), lihat audit P0-02*
 
 ## 🐛 Common Issues & Solutions
 

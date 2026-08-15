@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useSessions } from '../context/SessionsContext'
+import { useCommandPalette } from '../context/CommandPaletteContext'
+import { useHealthStatus, type HealthStatus } from '../hooks/useHealthStatus'
 import { Icon } from './Icon'
 
 const NAV = [
@@ -9,6 +11,7 @@ const NAV = [
   { to: '/flashcards', label: 'Flashcards', icon: 'i-card' },
   { to: '/progress', label: 'Progress', icon: 'i-chart' },
   { to: '/settings', label: 'Settings', icon: 'i-theme' },
+  { to: '/glossary', label: 'Glossary', icon: 'i-mark' },
 ]
 
 /** Link navigasi utama — dipakai di sidebar semua halaman. */
@@ -28,9 +31,45 @@ export function NavLinks() {
   )
 }
 
+const STATUS_LABEL: Record<HealthStatus, string> = {
+  connecting: 'Menghubungkan…',
+  connected: 'API terhubung',
+  degraded: 'API menurun',
+  offline: 'API offline',
+}
+
+const STATUS_CLASS: Record<HealthStatus, string> = {
+  connecting: 'is-connecting',
+  connected: 'is-ok',
+  degraded: 'is-degraded',
+  offline: 'is-error',
+}
+
+/** Indikator live status API — polling /health; klik untuk cek ulang manual. */
+function HealthIndicator() {
+  const { status, checkedAt, retry } = useHealthStatus()
+  const lastChecked = checkedAt
+    ? checkedAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '—'
+  return (
+    <button
+      type="button"
+      className={`status-line ${STATUS_CLASS[status]}`}
+      onClick={() => void retry()}
+      title={`Status API: ${STATUS_LABEL[status]} — dicek terakhir ${lastChecked}. Klik untuk cek ulang.`}
+      aria-label={`Status API: ${STATUS_LABEL[status]}. Klik untuk cek ulang.`}
+    >
+      <span className="status-dot" />
+      <span>{STATUS_LABEL[status]}</span>
+      {status !== 'connected' && <Icon name="i-refresh" className="icon status-refresh" />}
+    </button>
+  )
+}
+
 /** Sidebar lengkap: brand + navigasi + sessions (chat) + perintah + status. */
 export function Sidebar({ children }: { children?: React.ReactNode }) {
   const { createSession } = useSessions()
+  const { openCommandPalette } = useCommandPalette()
   const [creating, setCreating] = useState(false)
 
   async function handleCreate() {
@@ -68,14 +107,11 @@ export function Sidebar({ children }: { children?: React.ReactNode }) {
       {children}
 
       <div className="sidebar-bottom">
-        <button className="command-button" type="button" title="Ctrl K">
+        <button className="command-button" type="button" title="Ctrl K" onClick={openCommandPalette}>
           <span>Perintah</span>
           <kbd>Ctrl K</kbd>
         </button>
-        <div className="status-line is-ok">
-          <span className="status-dot" />
-          <span>API terhubung</span>
-        </div>
+        <HealthIndicator />
       </div>
     </aside>
   )

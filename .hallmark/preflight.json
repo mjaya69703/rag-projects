@@ -1,8 +1,0 @@
-{
-  "date": "2026-08-03",
-  "framework": "FastAPI with static HTML/CSS/JavaScript",
-  "font_stack": "Manrope + DM Mono via Google Fonts",
-  "palette": "Coral warm-neutral OKLCH tokens",
-  "motion": "motion-cut; CSS transform and opacity transitions only",
-  "spacing": "4px semantic token scale"
-}

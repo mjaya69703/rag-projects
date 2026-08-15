@@ -3,6 +3,10 @@
 **Versi:** 1.0
 **Tanggal:** 02 Agustus 2026
 
+> ⚠️ **DOKUMEN HISTORIS (sebagian)** — PRD ini ditulis untuk scope v1 (PDF-first, 02-08-2026) dan masih berlaku sebagai catatan kebutuhan awal. Scope aktual sudah jauh lebih luas (multi-format, React 19 SPA, hybrid search, 15 fitur learning loop). **Untuk stack & arsitektur aktual, lihat [`.agents/README.md`](../.agents/README.md) sebagai referensi kanonik.**
+
+> 📌 **Pembaruan scope (2026-08-09):** Sejak PRD v1 ditulis, hal-hal berikut sudah bertambah/diimplementasikan: (1) format input diperluas ke MD/TXT/DOCX/PPTX/HTML/URL + Watch-Folder; (2) UI diganti dari rencana sederhana menjadi SPA React 19 + Vite + Bun dengan SSE streaming; (3) pencarian menjadi hybrid (BM25 + vector), bukan vector-only; (4) semantic cache diimplementasikan custom di ChromaDB (bukan GPTCache); (5) ditambahkan multi-session chat persistent, MCP Server, Bot Telegram, dan 15 fitur Learning Loop.
+
 ## 1. Latar Belakang
 Pengguna membutuhkan cara cepat untuk mencari dan memahami informasi dari tumpukan dokumen PDF (materi kuliah, presentasi kantor). Pencarian keyword tradisional (Ctrl+F) tidak efektif karena tidak memahami konteks semantik.
 

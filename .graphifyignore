@@ -1,0 +1,20 @@
+# Dependencies & virtualenv — jangan discan
+node_modules/
+.venv/
+venv/
+__pycache__/
+
+# Data runtime pribadi
+data/
+uploads/
+
+# Build output frontend (hasil bun run build -> app/static)
+app/static/
+dist/
+build/
+
+# Artifacts
+*.min.js
+*.min.css
+*.map
+bun.lock

@@ -1,6 +1,8 @@
 # Architecture & Workflow
 
-## 🏗️ Arsitektur Sistem
+> ⚠️ **DOKUMEN HISTORIS — TIDAK AKTIF** — Diagram & workflow di bawah menggambarkan **stack lama** (Streamlit port 8501 + GPTCache + Top-K=3 vector-only). Aplikasi aktual: **SPA React 19/Vite/Bun disajikan langsung oleh FastAPI dari `app/static/`** (tanpa Streamlit), **hybrid search BM25 + ChromaDB**, dan **semantic cache custom di ChromaDB** (bukan GPTCache). **JANGAN diikuti. Referensi kanonik: [`.agents/02_ARCHITECTURE.md`](../.agents/02_ARCHITECTURE.md).**
+
+## 🏗️ Arsitektur Sistem (HISTORIS — lihat banner di atas)
 ┌─────────────────────────────────────────────────────────────┐
 │ USER (Browser) │
 │ (Akses via Cloudflare) │

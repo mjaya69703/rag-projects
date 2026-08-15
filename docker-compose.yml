@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   rag-app:
     build:
@@ -9,6 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    # Wajib: salin .env.example ke .env lalu isi LLM_API_KEY/LLM_API_BASE/LLM_MODEL.
     env_file:
       - .env
     environment:
@@ -18,7 +17,6 @@ services:
       - UPLOAD_DIR=/app/uploads
       - DB_PATH=/app/data/chat.db
       - RAG_MIN_SIMILARITY=0.6
-      - RAG_BACKEND_RAM_LIMIT_MB=2048
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads

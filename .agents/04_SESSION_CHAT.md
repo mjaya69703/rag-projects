@@ -37,10 +37,11 @@ ChatGPT/Claude. Diimplementasi 2026-08-02. Semua test hijau (26 pytest).
 - `estimate_tokens()` = total chars/4. `TOKEN_WARNING = 4000`.
 - UI menampilkan warning jika `over_token_warning`; saran: mode summary / new chat.
 
-## UI (ui.py)
-- Sidebar: `➕ New Chat`, radio daftar session, rename text input, delete + checkbox
-  konfirmasi. Upload dokumen & dokumen manager tetap di sidebar.
-- Main: riwayat di-render dari API tiap rerun (persistent). `st.chat_input` selalu
-  tampil; kalau backend mati → error koneksi, tidak crash.
+## UI (React SPA, `frontend/src/`)
+> Catatan (2026-08-09): UI asli Streamlit (`ui.py`) sudah diganti SPA React 19 + Vite + Bun
+> sejak Sprint 5 — deskripsi di bawah mencerminkan implementasi React saat ini.
+
+- Sidebar (`components/Sidebar.tsx`): tombol `➕ New Chat`, daftar session, rename, delete dengan `ConfirmDialog`, upload dokumen & dokumen manager.
+- Main (`pages/Chat.tsx`): riwayat di-render dari API (`GET /sessions/{id}/messages`) + streaming SSE (`POST /query/stream`, event `meta`/`delta`/`done`/`error`); composer selalu tampil; kalau backend mati → error-state koneksi dengan retry, tidak crash.
 - Auto-create session pertama saat app dibuka (kalau API hidup).
-- Mode & top-k & filter source dari sidebar.
+- Mode konteks (sliding/summary) & top-k & filter source dari floating composer strip.

@@ -1,29 +1,37 @@
 """FastAPI backend: expose logic RAG sebagai REST API + multi-session chat.
 
+Keamanan (P0-02): isi env API_TOKEN untuk mengunci semua endpoint API
+(kecuali /health & SPA statis) dengan `Authorization: Bearer <token>`
+(fail-closed); aksi terproteksi tercatat di audit log (GET /audit).
+
 Endpoint:
-- POST   /upload                     upload & index dokumen (PDF/MD/TXT)
-- POST   /ingest-url                 index konten dari URL (fitur #15)
-- POST   /query                      tanya jawab (bisa dengan session history)
-- GET    /documents                  daftar dokumen terindeks
-- DELETE /documents/{source}         hapus dokumen (tercatat di deleted_documents)
-- GET    /deleted-documents          daftar dokumen yang pernah dihapus
-- GET    /locations?q=               "Where is X covered?" (fitur #8)
-- GET    /repeated-questions         termometer pertanyaan berulang (7 hari)
-- POST   /sessions/create            buat session chat baru
-- GET    /sessions/list              daftar session
-- GET    /sessions/{id}/messages     riwayat pesan session
-- PUT    /sessions/{id}/rename       rename session
-- DELETE /sessions/{id}              hapus session + pesannya
-- GET    /learning/due               kartu review yang jatuh tempo (#1)
-- POST   /learning/answer            jawab kartu review (Ingat/Lupa) (#1)
-- GET    /learning/weak-spots        area lemah (#2)
-- GET    /learning/progress          progress bab per dokumen (#3)
-- POST   /learning/quiz/generate     buat soal dari materi (#4)
-- POST   /learning/quiz/grade        koreksi jawaban quiz (#4)
-- GET    /learning/quiz/history      riwayat skor quiz (#4)
-- GET    /learning/flashcards        kartu heading (tanpa LLM) (#5)
-- GET    /health                     health check
-- GET    /metrics                    metrik ringan (cache hit/miss, query, error LLM)
+- POST   /upload                      upload -> job ingestion asinkron (poll GET /jobs/{id})
+- POST   /ingest-url                  index URL -> job ingestion asinkron
+- GET    /jobs, /jobs/{job_id}        status job ingestion
+- POST   /query                       tanya jawab (bisa dengan session history)
+- POST   /query/stream                versi SSE dari /query
+- GET    /documents                   daftar dokumen terindeks
+- DELETE /documents/{source}          hapus index (?purge=true = hapus file fisik)
+- GET    /deleted-documents           daftar dokumen yang pernah dihapus
+- GET    /locations?q=                "Where is X covered?" (fitur #8)
+- GET    /repeated-questions          termometer pertanyaan berulang (7 hari)
+- POST   /sessions/create             buat session chat baru
+- GET    /sessions/list               daftar session
+- GET    /sessions/{id}/messages      riwayat pesan session
+- PUT    /sessions/{id}/rename        rename session
+- DELETE /sessions/{id}               hapus session + pesannya
+- GET    /learning/due                kartu review yang jatuh tempo (#1)
+- POST   /learning/answer             jawab kartu review (scheduler SM-2, #1)
+- GET    /learning/weak-spots         area lemah + mastery stats (#2)
+- GET    /learning/progress           progress bab per dokumen (#3)
+- POST   /learning/quiz/generate      terbitkan paket kuis (attempt_id, #4)
+- POST   /learning/quiz/grade         koreksi deterministik dari kunci server (#4)
+- GET    /learning/quiz/history       riwayat skor quiz (#4)
+- GET    /learning/flashcards         kartu heading (tanpa LLM) (#5)
+- GET    /privacy/info                disclosure data flow + retensi (P0-03)
+- DELETE /privacy/data, /privacy/cache  hapus data pribadi / cache (P0-03)
+- GET    /health                      health check publik (systemd)
+- GET    /metrics                     metrik operasional (latensi, disk, ingestion)
 
 Jalankan: .venv\\Scripts\\uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
@@ -31,24 +39,33 @@ Jalankan: .venv\\Scripts\\uvicorn app.main:app --host 0.0.0.0 --port 8000
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import logging.handlers
+import sqlite3
+import shutil
+import statistics
+import threading
 import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
+from starlette.routing import Match
 
-from app import annotations, db, learning
+from app import annotations, db, glossary, learning
 from app.config import (
     CORS_ORIGINS,
     MAX_UPLOAD_MB,
+    PUBLIC_API_PATHS,
     SLIDING_WINDOW_DEFAULT,
     SUMMARY_INTERVAL,
     SUMMARY_RECENT,
@@ -59,7 +76,7 @@ from app.llm_client import LLMError
 from app.rag_engine import RAGEngine
 from app.url_parser import parse_url
 from app.vector_store import VectorStore
-from app.watch_folder import SUPPORTED_EXTENSIONS, parse_any, scan_pending
+from app.watch_folder import SUPPORTED_EXTENSIONS, get_category_for_path, parse_any, scan_pending
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +93,46 @@ RATE_LIMIT_PATHS = {"/query", "/query/stream", "/upload", "/ingest-url"}
 # Watch-folder: interval scan dokumen baru di upload_dir (detik).
 WATCH_FOLDER_INTERVAL_SEC = 30
 
+# Serialisasi job ingestion (upload/URL) vs watch-folder vs update kategori.
+# Aplikasi ini single-process (uvicorn workers=1); lock ini melengkapi
+# lock mutasi di VectorStore (P1-06: kebijakan concurrency eksplisit).
+_INGEST_LOCK = threading.Lock()
+
+# Route API yang terproteksi auth (P0-02), dihitung lazy dari app.routes.
+_protected_routes: list | None = None
+
+
+def _get_protected_routes() -> list:
+    """Semua route API (APIRoute) kecuali jalur publik (mis. /health)
+    dan catch-all SPA (/{full_path:path}) yang melayani file statis."""
+    global _protected_routes
+    if _protected_routes is None:
+        _protected_routes = [
+            r
+            for r in app.routes
+            if isinstance(r, APIRoute)
+            and r.path not in PUBLIC_API_PATHS
+            and r.path != "/{full_path:path}"  # SPA fallback, publik
+        ]
+    return _protected_routes
+
+
+def _is_protected_api(scope: dict) -> bool:
+    """True jika request mengenai route API yang butuh autentikasi.
+
+    SPA statis (spa_fallback, path tanpa route API) tidak ikut diblokir.
+    """
+    for route in _get_protected_routes():
+        if route.matches(scope)[0] is Match.FULL:
+            return True
+    return False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = Settings()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    settings.staging_dir.mkdir(parents=True, exist_ok=True)
     db.init_db(settings.db_path)
     learning.ensure_tables(settings.db_path)
     store = VectorStore(persist_dir=settings.persist_dir)
@@ -88,13 +140,36 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.store = store
     app.state.engine = engine
+    app.state.started_at = time.time()
     app.state.metrics = {
         "cache_hits": 0,
         "cache_misses": 0,
         "queries": 0,
         "llm_errors": 0,
+        "requests": 0,
+        "latency_ms": deque(maxlen=500),  # rolling window untuk p50/p95
+        "ingestion": {"total": 0, "failed": 0, "pending": 0, "ready": 0},
     }
     _setup_file_logging(settings.log_dir)
+
+    # Retensi data pribadi (P0-03): purge chat lama & cache semantic TTL.
+    if settings.retain_chat_days > 0:
+        purged = db.purge_old_chats(settings.db_path, settings.retain_chat_days)
+        if purged:
+            logger.info(
+                "retensi: %d session tidak diakses >= %d hari dihapus",
+                purged, settings.retain_chat_days,
+            )
+    if settings.cache_max_days > 0:
+        try:
+            from app.semantic_cache import SemanticCache
+
+            n = SemanticCache(store).purge_older_than(settings.cache_max_days)
+            if n:
+                logger.info("retensi: %d entri cache semantic dihapus", n)
+        except Exception:
+            logger.exception("retensi: gagal purge semantic cache")
+
     logger.info(
         "API siap: persist=%s upload=%s db=%s dokumen=%d session=%d",
         settings.persist_dir,
@@ -172,7 +247,7 @@ class QuizGenerateRequest(BaseModel):
 
 
 class QuizGradeRequest(BaseModel):
-    questions: list[dict]
+    attempt_id: str = Field(..., min_length=1, max_length=64)
     answers: list[int]
 
 
@@ -182,7 +257,152 @@ class FlashcardAnswerRequest(BaseModel):
     known: bool
 
 
-from app.watch_folder import SUPPORTED_EXTENSIONS, get_category_for_path, parse_any, scan_pending
+def _index_chunks(
+    settings: Settings,
+    store: VectorStore,
+    source: str,
+    category: str,
+    chunks,
+    job_id: str = "",
+) -> int:
+    """Seragamkan update index + metadata + registry untuk satu dokumen.
+
+    Dipakai upload job, ingest-url job, dan watch-folder supaya lifecycle
+    file/index/metadata konsisten (P1-02).
+    """
+    with _INGEST_LOCK:
+        n = store.replace_document(chunks, source=source, category=category)
+        db.set_document_category(settings.db_path, source, category)
+        db.clear_deleted_document(settings.db_path, source)
+        db.update_document_status(
+            settings.db_path, source, "ready",
+            chunks=n, category=category, job_id=job_id,
+        )
+        return n
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _safe_unlink(path: Path, attempts: int = 3) -> None:
+    """Hapus file dengan retry — parser (mis. PyMuPDF) kadang masih
+    memegang handle pada Windows sampai GC. Jangan pernah crash karena ini."""
+    import gc
+
+    for i in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                logger.warning("gagal hapus file sementara: %s", path)
+                return
+            gc.collect()
+            time.sleep(0.2)
+
+
+def _ingest_file_job(
+    settings: Settings,
+    store: VectorStore,
+    staged: Path,
+    source: str,
+    category: str,
+    kind: str,
+    job_id: str,
+    checksum: str,
+) -> None:
+    """Job background (threadpool): parse staging -> index -> pindah final.
+
+    Status registry: queued -> processing -> ready | error. File staging
+    dibersihkan di kedua ujung; file hanya dipindah ke upload_dir setelah
+    parsing sukses (P1-01: tidak ada file invalid yang tertinggal).
+    """
+    metrics = app.state.metrics["ingestion"]
+    metrics["pending"] += 1
+    db.update_document_status(settings.db_path, source, "processing", job_id=job_id)
+    try:
+        existing = db.get_document(settings.db_path, source)
+        # Dedup: versi ready dengan checksum sama -> tidak perlu re-embed.
+        if (
+            existing
+            and existing.get("status") == "ready"
+            and existing.get("checksum") == checksum
+        ):
+            staged.unlink(missing_ok=True)
+            db.update_document_status(settings.db_path, source, "ready", job_id=job_id)
+            logger.info("ingest: %s tidak berubah (checksum sama), dilewati", source)
+            metrics["ready"] += 1
+            return
+
+        chunks = parse_any(staged, source=source)
+        if not chunks:
+            raise ValueError("Tidak ada teks yang bisa diekstrak (PDF hasil scan?).")
+
+        final_path = settings.upload_dir / Path(staged.name).name
+        shutil.move(str(staged), str(final_path))
+        n = _index_chunks(settings, store, source, category, chunks, job_id=job_id)
+        db.update_document_status(
+            settings.db_path, source, "ready",
+            chunks=n, file_path=str(final_path), checksum=checksum,
+            category=category, job_id=job_id,
+        )
+        metrics["total"] += 1
+        metrics["ready"] += 1
+        logger.info("ingest: %s (%s) terindeks (%d chunk)", source, kind, n)
+    except Exception as exc:
+        logger.exception("ingest gagal: %s", source)
+        db.update_document_status(
+            settings.db_path, source, "error",
+            error=str(exc)[:500], job_id=job_id,
+        )
+        # Bebaskan referensi exception: traceback-nya memegang frame locals
+        # parser (mis. objek PyMuPDF yang masih membuka file) sehingga handle
+        # file bisa dilepas GC — wajib di Windows sebelum unlink staging.
+        del exc
+        _safe_unlink(staged)
+        metrics["failed"] += 1
+    finally:
+        metrics["pending"] -= 1
+
+
+def _ingest_url_job(
+    settings: Settings,
+    store: VectorStore,
+    url: str,
+    source: str,
+    category: str,
+    job_id: str,
+) -> None:
+    """Job background untuk ingest URL (parse jaringan di threadpool)."""
+    metrics = app.state.metrics["ingestion"]
+    metrics["pending"] += 1
+    db.update_document_status(settings.db_path, source, "processing", job_id=job_id)
+    try:
+        chunks = parse_url(url, source=source)
+        if not chunks:
+            raise ValueError("Tidak ada teks yang bisa diekstrak dari URL.")
+        n = _index_chunks(settings, store, source, category, chunks, job_id=job_id)
+        db.update_document_status(
+            settings.db_path, source, "ready",
+            chunks=n, checksum="", category=category, job_id=job_id,
+        )
+        metrics["total"] += 1
+        metrics["ready"] += 1
+        logger.info("ingest-url: %s terindeks (%d chunk)", source, n)
+    except Exception as exc:
+        logger.exception("ingest-url gagal: %s", url)
+        db.update_document_status(
+            settings.db_path, source, "error",
+            error=str(exc)[:500], job_id=job_id,
+        )
+        metrics["failed"] += 1
+    finally:
+        metrics["pending"] -= 1
 
 
 def _watch_folder_loop(settings: Settings, store: VectorStore) -> None:
@@ -201,10 +421,7 @@ def _watch_folder_loop(settings: Settings, store: VectorStore) -> None:
                     chunks = parse_any(path, source=source)
                     if not chunks:
                         continue
-                    store.delete_document(source)  # replace
-                    store.add_documents(chunks, source=source, category=cat)
-                    db.set_document_category(settings.db_path, source, cat)
-                    db.clear_deleted_document(settings.db_path, source)
+                    _index_chunks(settings, store, source, cat, chunks)
                     logger.info("watch-folder: %s (%s) terindeks (%d chunk)", source, cat, len(chunks))
             except asyncio.CancelledError:
                 raise
@@ -274,6 +491,31 @@ async def rate_limit_middleware(request, call_next):
 
 
 @app.middleware("http")
+async def auth_middleware(request, call_next):
+    """Fail-closed auth (P0-02): bila API_TOKEN diset, semua route API
+    kecuali PUBLIC_API_PATHS wajib mengirim `Authorization: Bearer <token>`.
+
+    SPA statis (dilayani spa_fallback) tetap publik; gerbang UI penuh
+    (mis. Cloudflare Access) tetap tanggung jawab deployment. Ini memastikan
+    port 8000 yang terekspos tidak bisa dipakai baca/tulis data tanpa token.
+    """
+    settings = getattr(request.app.state, "settings", None)
+    token = settings.api_token if settings is not None else ""
+    if token and _is_protected_api(request.scope):
+        header = request.headers.get("Authorization", "")
+        provided = header[7:].strip() if header.startswith("Bearer ") else ""
+        if not provided or not hmac.compare_digest(provided, token):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "Unauthorized: Authorization header (Bearer token) diperlukan."
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def log_requests(request, call_next):
     """Logging terstruktur: request id, method, path, status, durasi."""
     request_id = uuid.uuid4().hex[:8]
@@ -289,6 +531,28 @@ async def log_requests(request, call_next):
         duration_ms,
     )
     response.headers["X-Request-ID"] = request_id
+
+    # Observability ringan (P2-05): counter request + rolling latensi.
+    metrics = getattr(request.app.state, "metrics", None)
+    if metrics is not None:
+        metrics["requests"] += 1
+        metrics["latency_ms"].append(duration_ms)
+
+    # Audit log (P0-02): aksi pada route API yang terproteksi.
+    if _is_protected_api(request.scope):
+        settings = getattr(request.app.state, "settings", None)
+        if settings is not None:
+            ip = request.client.host if request.client else "unknown"
+            header = request.headers.get("Authorization", "")
+            actor = "token" if header.startswith("Bearer ") else ip
+            db.record_audit(
+                settings.db_path,
+                actor,
+                f"{request.method} {request.url.path}",
+                ip=ip,
+                status=response.status_code,
+                duration_ms=duration_ms,
+            )
     return response
 
 
@@ -307,13 +571,105 @@ def _sse(data: dict) -> str:
 
 @app.get("/health")
 def health() -> dict:
+    """Health check publik (dipakai systemd / load balancer)."""
     return {"status": "ok"}
 
 
 @app.get("/metrics")
 def metrics() -> dict:
-    """Metrik ringan tanpa dependency: cache hit/miss, query, error LLM."""
-    return dict(getattr(app.state, "metrics", {}))
+    """Metrik operasional: counter, latensi p50/p95, disk, ingestion."""
+    m = dict(getattr(app.state, "metrics", {}))
+    latency = m.pop("latency_ms", None)
+    if latency:
+        vals = sorted(latency)
+        m["latency_ms_p50"] = round(statistics.median(vals), 1)
+        m["latency_ms_p95"] = round(vals[int(len(vals) * 0.95) - 1], 1)
+    m["latency_ms_window"] = len(latency or [])
+    if hasattr(app.state, "started_at"):
+        m["uptime_sec"] = round(time.time() - app.state.started_at, 1)
+    # Kesehatan disk untuk data lokal (target observability P2-05).
+    try:
+        settings: Settings = app.state.settings
+        usage = shutil.disk_usage(settings.persist_dir)
+        m["disk"] = {
+            "persist_free_mb": round(usage.free / (1024 * 1024), 1),
+            "persist_total_mb": round(usage.total / (1024 * 1024), 1),
+        }
+    except Exception:
+        pass
+    return m
+
+
+@app.get("/audit")
+def audit_log(limit: int = 50) -> dict:
+    """Audit log aksi API terproteksi (P0-02). Hanya lewat token."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "entries": db.list_audit(settings.db_path, limit=limit),
+    }
+
+
+# ----------------------------------------------------------------------
+# Privasi (P0-03) — disclosure, retensi, dan hapus data pribadi
+# ----------------------------------------------------------------------
+@app.get("/privacy/info")
+def privacy_info() -> dict:
+    """Disclosure data flow: ke mana dokumen/chat dikirim, retensi, dll.
+
+    Dipakai frontend untuk banner disclosure saat konfigurasi pertama.
+    """
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "provider_label": settings.llm_provider_label,
+        "external_data_flow": True,  # LLM eksternal dipakai untuk RAG
+        "redaction_enabled": settings.redaction_enabled,
+        "retention": {
+            "chat_days": settings.retain_chat_days,
+            "cache_max_days": settings.cache_max_days,
+        },
+        "disclosure_text": (
+            f"Aplikasi ini mengirim isi dokumen yang relevan dan riwayat chat "
+            f"ke {settings.llm_provider_label} untuk menghasilkan jawaban. "
+            "Data tersimpan lokal (ChromaDB + SQLite) di mesin ini."
+            + (
+                " Redaksi PII aktif: email/nomor telepon/pola rahasia "
+                "disensor sebelum dikirim ke LLM."
+                if settings.redaction_enabled
+                else ""
+            )
+            + (
+                f" Chat yang tidak diakses lebih dari {settings.retain_chat_days} hari "
+                "dihapus otomatis."
+                if settings.retain_chat_days > 0
+                else " Chat disimpan tanpa batas waktu sampai kamu menghapusnya."
+            )
+        ),
+    }
+
+
+@app.delete("/privacy/data")
+def privacy_clear_all() -> dict:
+    """Hapus SEMUA data pribadi: chat, ringkasan, anotasi, quiz, kartu.
+
+    Indeks dokumen (ChromaDB) TIDAK dihapus. Untuk purge total dokumen,
+    gunakan delete per dokumen.
+    """
+    settings: Settings = app.state.settings
+    deleted = db.clear_all_user_data(settings.db_path)
+    logger.warning("privacy: semua data pribadi dihapus: %s", deleted)
+    return {"status": "ok", "deleted": deleted}
+
+
+@app.delete("/privacy/cache")
+def privacy_clear_cache() -> dict:
+    """Kosongkan semantic cache (jawaban LLM tersimpan)."""
+    store: VectorStore = app.state.store
+    from app.semantic_cache import SemanticCache
+
+    n = SemanticCache(store).clear()
+    return {"status": "ok", "cleared_entries": n}
 
 
 @app.get("/repeated-questions")
@@ -341,8 +697,14 @@ def upload(
     file: UploadFile = File(...),  # noqa: B008 - idiom FastAPI, bukan default biasa
     source: str | None = Form(default=None),
     category: str | None = Form(default=None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),  # noqa: B008
 ) -> dict:
-    """Upload dokumen (PDF/MD/TXT), parse, chunk, dan index ke ChromaDB."""
+    """Upload dokumen -> job ingestion asinkron (P1-01).
+
+    Response langsung berisi job_id; klien mem-poll GET /jobs/{job_id}.
+    File ditulis ke staging dulu, baru dipindah ke upload_dir setelah
+    parsing sukses. Re-upload dengan checksum sama dilewati (dedup).
+    """
     settings: Settings = app.state.settings
     filename = Path(file.filename or "file.pdf").name  # cegah path traversal
     ext = Path(filename).suffix.lower()
@@ -353,6 +715,10 @@ def upload(
         )
 
     content = file.file.read()
+    try:
+        file.file.close()  # lepaskan handle upload (Windows file lock)
+    except Exception:
+        pass
     if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
         raise HTTPException(
             status_code=400, detail=f"File maksimal {MAX_UPLOAD_MB} MB."
@@ -360,77 +726,106 @@ def upload(
     if ext == ".pdf" and not content.lstrip().startswith(b"%PDF-"):
         raise HTTPException(status_code=400, detail="File bukan PDF yang valid.")
 
-    doc_path = settings.upload_dir / filename
-    doc_path.write_bytes(content)
-
     src = source or filename
     cat = category.strip() if category and category.strip() else "Umum"
-    try:
-        chunks = parse_any(doc_path, source=src)
-    except Exception as exc:
-        logger.exception("Gagal memproses dokumen: %s", filename)
-        raise HTTPException(
-            status_code=400, detail=f"Gagal memproses dokumen: {exc}"
-        ) from exc
-    if not chunks:
-        raise HTTPException(
-            status_code=400,
-            detail="Tidak ada teks yang bisa diekstrak (PDF hasil scan?).",
-        )
+    checksum = hashlib.sha256(content).hexdigest()
 
-    store: VectorStore = app.state.store
-    removed = store.delete_document(src)  # upload ulang = replace
-    db.clear_deleted_document(settings.db_path, src)  # sudah aktif lagi
-    n = store.add_documents(chunks, source=src, category=cat)
-    db.set_document_category(settings.db_path, src, cat)
+    # Dedup: versi ready dengan konten sama -> tidak perlu diproses ulang.
+    existing = db.get_document(settings.db_path, src)
+    if (
+        existing
+        and existing.get("status") == "ready"
+        and existing.get("checksum") == checksum
+    ):
+        logger.info("upload: %s tidak berubah (checksum sama), dilewati", src)
+        return {
+            "status": "ready",
+            "unchanged": True,
+            "source": src,
+            "category": cat,
+            "kind": ext.lstrip("."),
+            "chunks": existing.get("chunks", 0),
+        }
+
+    job_id = uuid.uuid4().hex
+    staged = settings.staging_dir / f"{job_id}_{filename}"
+    staged.write_bytes(content)
+    db.register_document(
+        settings.db_path, src, kind="file", job_id=job_id,
+        file_path="", checksum=checksum, size_bytes=len(content),
+        category=cat, status="queued",
+    )
+    background_tasks.add_task(
+        _ingest_file_job, settings, app.state.store,
+        staged, src, cat, ext.lstrip("."), job_id, checksum,
+    )
     return {
-        "status": "ok",
+        "status": "processing",
+        "job_id": job_id,
         "source": src,
         "category": cat,
         "kind": ext.lstrip("."),
-        "chunks": n,
-        "replaced": removed,
-        "documents": store.list_documents(),
     }
 
 
 @app.post("/ingest-url")
-def ingest_url(req: IngestUrlRequest) -> dict:
-    """Index konten dari URL (fitur #15)."""
+def ingest_url(
+    req: IngestUrlRequest,
+    background_tasks: BackgroundTasks = BackgroundTasks(),  # noqa: B008
+) -> dict:
+    """Index konten dari URL sebagai job asinkron (fitur #15, P1-01).
+
+    Fetch jaringan + parse dijalankan di background (threadpool) supaya
+    request tidak memblokir worker; klien mem-poll GET /jobs/{job_id}.
+    """
     settings: Settings = app.state.settings
     src = req.source or req.url
     cat = req.category.strip() if req.category and req.category.strip() else "Umum"
-    try:
-        chunks = parse_url(req.url, source=src)
-    except Exception as exc:
-        logger.exception("Gagal mengambil URL: %s", req.url)
-        raise HTTPException(
-            status_code=400, detail=f"Gagal mengambil URL: {exc}"
-        ) from exc
-    if not chunks:
-        raise HTTPException(status_code=400, detail="Tidak ada teks yang bisa diekstrak dari URL.")
-
-    store: VectorStore = app.state.store
-    removed = store.delete_document(src)  # re-index = replace
-    db.clear_deleted_document(settings.db_path, src)
-    n = store.add_documents(chunks, source=src, category=cat)
-    db.set_document_category(settings.db_path, src, cat)
+    job_id = uuid.uuid4().hex
+    db.register_document(
+        settings.db_path, src, kind="url", job_id=job_id,
+        category=cat, status="queued",
+    )
+    background_tasks.add_task(
+        _ingest_url_job, settings, app.state.store,
+        req.url, src, cat, job_id,
+    )
     return {
-        "status": "ok",
+        "status": "processing",
+        "job_id": job_id,
         "source": src,
         "category": cat,
         "kind": "url",
-        "chunks": n,
-        "replaced": removed,
-        "documents": store.list_documents(),
     }
 
 
-@app.post("/query")
-def query(req: QueryRequest) -> dict:
-    """Tanya jawab berdasarkan dokumen terindeks (+ konteks session bila ada)."""
-    engine: RAGEngine = app.state.engine
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str) -> dict:
+    """Status job ingestion (P1-01): queued|processing|ready|error."""
     settings: Settings = app.state.settings
+    doc = db.get_document_by_job(settings.db_path, job_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Job tidak ditemukan.")
+    return {"status": "ok", "job": doc}
+
+
+@app.get("/jobs")
+def jobs_list(limit: int = 20) -> dict:
+    """Daftar job ingestion terbaru (untuk UI progress/monitoring)."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "jobs": db.list_document_registry(settings.db_path)[:limit],
+    }
+
+
+def _prepare_query(engine: RAGEngine, settings: Settings, req: QueryRequest) -> dict:
+    """Bangun konteks query: filter, history, session, summary, grounding.
+
+    Dipakai bersama oleh /query dan /query/stream (P1-05) supaya tidak ada
+    duplikasi logika — policy query (filter, session, grounding) selalu
+    sinkron di kedua endpoint.
+    """
     where: dict | None = {}
     if req.source:
         where["source"] = req.source
@@ -451,39 +846,66 @@ def query(req: QueryRequest) -> dict:
         )
 
     # Grounding: filter ke dokumen yang tidak (lagi) ada di indeks.
+    missing: dict | None = None
     if req.source:
         status = engine.document_status(req.source, settings.db_path)
         if not status["exists"]:
-            hint = "sudah dihapus dari indeks" if status["deleted"] else "belum pernah diindeks"
+            hint = (
+                "sudah dihapus dari indeks"
+                if status["deleted"]
+                else "belum pernah diindeks"
+            )
             detail = (
                 f"Dokumen '{req.source}' {hint}. Dokumen yang aktif: "
                 f"{', '.join(status['available']) or 'tidak ada'}."
             )
-            if session_info is not None:
-                db.add_message(settings.db_path, req.session_id, "user", req.question, [])
-                db.add_message(settings.db_path, req.session_id, "assistant", detail, [])
-            return {
-                "status": "ok",
-                "answer": detail,
-                "cached": False,
-                "model": None,
-                "sources": [],
-                "grounded": False,
-                "document_missing": True,
-                "session": session_info,
-            }
+            missing = {"detail": detail, "session_info": session_info}
+
+    return {
+        "where": where,
+        "history": history,
+        "session_info": session_info,
+        "summary": summary,
+        "missing": missing,
+    }
+
+
+@app.post("/query")
+def query(req: QueryRequest) -> dict:
+    """Tanya jawab berdasarkan dokumen terindeks (+ konteks session bila ada)."""
+    engine: RAGEngine = app.state.engine
+    settings: Settings = app.state.settings
+    ctx = _prepare_query(engine, settings, req)
+
+    if ctx["missing"]:
+        missing = ctx["missing"]
+        if ctx["session_info"] is not None:
+            db.add_message(settings.db_path, req.session_id, "user", req.question, [])
+            db.add_message(
+                settings.db_path, req.session_id, "assistant", missing["detail"], []
+            )
+        return {
+            "status": "ok",
+            "answer": missing["detail"],
+            "cached": False,
+            "model": None,
+            "sources": [],
+            "grounded": False,
+            "document_missing": True,
+            "session": ctx["session_info"],
+        }
 
     # Simpan pertanyaan user SEBELUM call LLM (auto-title butuh pesan pertama)
-    if session_info is not None:
+    if ctx["session_info"] is not None:
         db.add_message(settings.db_path, req.session_id, "user", req.question, [])
 
     try:
         answer = engine.query(
             req.question,
             top_k=req.top_k,
-            where=where,
-            history=history,
-            summary=summary,
+            where=ctx["where"],
+            history=ctx["history"],
+            summary=ctx["summary"],
         )
     except LLMError as exc:
         app.state.metrics["llm_errors"] += 1
@@ -492,6 +914,7 @@ def query(req: QueryRequest) -> dict:
     _record_query(app.state.metrics, answer.cached)
 
     # Simpan jawaban + update session
+    session_info = ctx["session_info"]
     if session_info is not None:
         db.add_message(
             settings.db_path,
@@ -524,56 +947,35 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
     """
     engine: RAGEngine = app.state.engine
     settings: Settings = app.state.settings
-    where: dict | None = {}
-    if req.source:
-        where["source"] = req.source
-    if req.category:
-        where["category"] = req.category
-    if not where:
-        where = None
+    ctx = _prepare_query(engine, settings, req)
+    session_info = ctx["session_info"]
 
-    history: list[dict] = []
-    session_info: dict | None = None
-    summary: str | None = None
-    if req.session_id:
-        session = db.get_session(settings.db_path, req.session_id)
-        if session is None:
-            raise HTTPException(status_code=404, detail="Session tidak ditemukan.")
-        history, session_info, summary = _build_history(
-            settings.db_path, req.session_id, req.mode, req.history_n
-        )
-
-    # Grounding: filter ke dokumen yang tidak (lagi) ada di indeks.
-    if req.source:
-        status = engine.document_status(req.source, settings.db_path)
-        if not status["exists"]:
-            hint = "sudah dihapus dari indeks" if status["deleted"] else "belum pernah diindeks"
-            detail = (
-                f"Dokumen '{req.source}' {hint}. Dokumen yang aktif: "
-                f"{', '.join(status['available']) or 'tidak ada'}."
+    if ctx["missing"]:
+        missing = ctx["missing"]
+        if session_info is not None:
+            db.add_message(settings.db_path, req.session_id, "user", req.question, [])
+            db.add_message(
+                settings.db_path, req.session_id, "assistant", missing["detail"], []
             )
-            if session_info is not None:
-                db.add_message(settings.db_path, req.session_id, "user", req.question, [])
-                db.add_message(settings.db_path, req.session_id, "assistant", detail, [])
-                session_info = _post_query_tasks(
-                    engine, settings.db_path, req.session_id, req.question
-                )
+            session_info = _post_query_tasks(
+                engine, settings.db_path, req.session_id, req.question
+            )
 
-            async def missing_gen():
-                yield _sse(
-                    {
-                        "type": "meta",
-                        "sources": [],
-                        "cached": False,
-                        "model": None,
-                        "grounded": False,
-                        "document_missing": True,
-                    }
-                )
-                yield _sse({"type": "delta", "text": detail})
-                yield _sse({"type": "done", "answer": detail, "session": session_info})
+        async def missing_gen():
+            yield _sse(
+                {
+                    "type": "meta",
+                    "sources": [],
+                    "cached": False,
+                    "model": None,
+                    "grounded": False,
+                    "document_missing": True,
+                }
+            )
+            yield _sse({"type": "delta", "text": missing["detail"]})
+            yield _sse({"type": "done", "answer": missing["detail"], "session": session_info})
 
-            return StreamingResponse(missing_gen(), media_type="text/event-stream")
+        return StreamingResponse(missing_gen(), media_type="text/event-stream")
 
     if session_info is not None:
         db.add_message(settings.db_path, req.session_id, "user", req.question, [])
@@ -589,9 +991,9 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
             async for ev in engine.stream_query(
                 req.question,
                 top_k=req.top_k,
-                where=where,
-                history=history,
-                summary=summary,
+                where=ctx["where"],
+                history=ctx["history"],
+                summary=ctx["summary"],
             ):
                 if ev["type"] == "meta":
                     cached = ev["cached"]
@@ -758,6 +1160,102 @@ def delete_annotation(chunk_key: str) -> dict:
 
 
 # ----------------------------------------------------------------------
+# Glossary (istilah + definisi yang dapat diverifikasi user)
+# ----------------------------------------------------------------------
+class GlossaryRequest(BaseModel):
+    term: str = Field(..., min_length=1, max_length=160)
+    definition: str = Field(..., min_length=1, max_length=3000)
+    source: str | None = Field(default=None, max_length=300)
+    page: int | None = Field(default=None, ge=1, le=1_000_000)
+    category: str = Field(default="Umum", min_length=1, max_length=100)
+    verified: bool = False
+
+
+class GlossaryExtractRequest(BaseModel):
+    source: str | None = Field(default=None, max_length=300)
+    n: int = Field(default=10, ge=1, le=20)
+
+
+@app.get("/api/glossary")
+def list_glossary(
+    q: str = "",
+    source: str | None = None,
+    verified: bool | None = None,
+    limit: int = 100,
+) -> dict:
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "terms": db.list_glossary(
+            settings.db_path, search=q, source=source, verified=verified, limit=limit
+        ),
+    }
+
+
+@app.post("/api/glossary/extract")
+def extract_glossary(req: GlossaryExtractRequest) -> dict:
+    """Usulkan kandidat glossary dari dokumen; belum disimpan sebelum direview user."""
+    engine: RAGEngine = app.state.engine
+    try:
+        candidates = glossary.extract_candidates(engine, source=req.source, limit=req.n)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {
+        "status": "ok",
+        "source": req.source,
+        "candidates": candidates,
+        "review_required": True,
+    }
+
+
+@app.post("/api/glossary", status_code=201)
+def create_glossary(req: GlossaryRequest) -> dict:
+    settings: Settings = app.state.settings
+    try:
+        term = db.create_glossary_term(
+            settings.db_path,
+            req.term,
+            req.definition,
+            req.source or "",
+            req.page,
+            req.category,
+            req.verified,
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Istilah tersebut sudah ada.") from None
+    return {"status": "ok", "term": term}
+
+
+@app.put("/api/glossary/{term_id}")
+def update_glossary(term_id: int, req: GlossaryRequest) -> dict:
+    settings: Settings = app.state.settings
+    try:
+        term = db.update_glossary_term(
+            settings.db_path,
+            term_id,
+            req.term,
+            req.definition,
+            req.source or "",
+            req.page,
+            req.category,
+            req.verified,
+        )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="Istilah tersebut sudah ada.") from None
+    if term is None:
+        raise HTTPException(status_code=404, detail="Istilah tidak ditemukan.")
+    return {"status": "ok", "term": term}
+
+
+@app.delete("/api/glossary/{term_id}")
+def delete_glossary(term_id: int) -> dict:
+    settings: Settings = app.state.settings
+    if not db.delete_glossary_term(settings.db_path, term_id):
+        raise HTTPException(status_code=404, detail="Istilah tidak ditemukan.")
+    return {"status": "ok", "term_id": term_id}
+
+
+# ----------------------------------------------------------------------
 # Sessions
 # ----------------------------------------------------------------------
 @app.post("/sessions/create")
@@ -822,6 +1320,7 @@ def set_document_category(source: str, req: SetCategoryRequest) -> dict:
     store: VectorStore = app.state.store
     cat = req.category.strip() or "Umum"
     db.set_document_category(settings.db_path, source, cat)
+    db.update_document_status(settings.db_path, source, category=cat)
     store.update_document_category(source, cat)
     return {"status": "ok", "source": source, "category": cat}
 
@@ -849,7 +1348,13 @@ def locations(q: str = "", top_k: int = 15) -> dict:
 
 
 @app.delete("/documents/{source}")
-def delete_document(source: str) -> dict:
+def delete_document(source: str, purge: bool = False) -> dict:
+    """Hapus dokumen dari indeks.
+
+    Default = archive: index dibuang, file fisik & registry dipertahankan
+    (bisa di-upload ulang, tercatat di deleted-documents). purge=true =
+    purge total: index + file fisik + mapping kategori + registry dihapus.
+    """
     store: VectorStore = app.state.store
     settings: Settings = app.state.settings
     removed = store.delete_document(source)
@@ -858,7 +1363,22 @@ def delete_document(source: str) -> dict:
             status_code=404, detail=f"Dokumen '{source}' tidak ditemukan."
         )
     db.record_deleted_document(settings.db_path, source)
-    return {"status": "ok", "source": source, "removed": removed}
+    if purge:
+        doc = db.get_document(settings.db_path, source)
+        if doc and doc.get("file_path"):
+            try:
+                upload_root = settings.upload_dir.resolve()
+                fp = Path(doc["file_path"]).resolve()
+                if fp.is_relative_to(upload_root):
+                    fp.unlink(missing_ok=True)
+                    logger.info("purge: file fisik dihapus: %s", fp)
+            except Exception:
+                logger.exception("purge: gagal hapus file fisik %s", source)
+        db.delete_document_category_mapping(settings.db_path, source)
+        db.purge_document(settings.db_path, source)
+    else:
+        db.update_document_status(settings.db_path, source, "deleted")
+    return {"status": "ok", "source": source, "removed": removed, "purged": purge}
 
 
 # ----------------------------------------------------------------------
@@ -891,11 +1411,16 @@ def learning_answer(req: AnswerCardRequest) -> dict:
 
 @app.get("/learning/weak-spots")
 def learning_weak_spots(limit: int = 8) -> dict:
-    """Topik yang paling sering diulang / sering lupa (#2)."""
+    """Topik yang paling sering diulang / sering lupa (#2, P2-03).
+
+    Sekarang berbasis bukti correctness nyata: lapses review, jawaban
+    flashcard salah, dan jawaban quiz salah — bukan hanya frekuensi tanya.
+    """
     settings: Settings = app.state.settings
     return {
         "status": "ok",
         "weak_spots": learning.weak_spots(settings.db_path, limit=limit),
+        "mastery": learning.mastery_stats(settings.db_path),
     }
 
 
@@ -911,26 +1436,44 @@ def learning_progress() -> dict:
 
 @app.post("/learning/quiz/generate")
 def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
-    """Buat soal pilihan ganda dari materi (#4)."""
+    """Buat soal pilihan ganda dari materi (#4, P2-04).
+
+    Paket soal + kunci jawaban disimpan server-side; client menerima
+    attempt_id + soal TANPA kunci jawaban. Skor dihitung deterministik
+    saat grade — client tidak bisa mengirim soal sembarangan.
+    """
     engine: RAGEngine = app.state.engine
+    settings: Settings = app.state.settings
     try:
         questions = learning.generate_quiz(engine, source=req.source, n=req.n)
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
-    return {"status": "ok", "questions": questions}
+    if not questions:
+        raise HTTPException(
+            status_code=400, detail="Tidak ada materi untuk membuat soal."
+        )
+    attempt = learning.create_quiz_attempt(settings.db_path, req.source, questions)
+    return {
+        "status": "ok",
+        "attempt_id": attempt["attempt_id"],
+        "source": attempt["source"],
+        "questions": attempt["questions"],
+    }
 
 
 @app.post("/learning/quiz/grade")
 def learning_quiz_grade(req: QuizGradeRequest) -> dict:
-    """Koreksi jawaban quiz via LLM (#4)."""
-    engine: RAGEngine = app.state.engine
+    """Koreksi jawaban kuis secara DETERMINISTIK dari kunci server (P2-04).
+
+    LLM tidak menentukan skor — skor selalu cocok dengan detail per soal.
+    """
     settings: Settings = app.state.settings
     try:
-        result = learning.grade_quiz(engine, req.questions, req.answers)
-    except LLMError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from None
-    source = req.questions[0].get("source") if req.questions else ""
-    learning.save_quiz_score(settings.db_path, source, result["score"], result["total"])
+        result = learning.grade_quiz_attempt(
+            settings.db_path, req.attempt_id, req.answers
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
     return {"status": "ok", **result}
 
 
