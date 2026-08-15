@@ -31,6 +31,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
+# Pre-download model embedding agar container tidak unduh dari
+# HuggingFace saat runtime (cold start cepat, aman untuk server offline).
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+
 # Copy application source code & command runner
 COPY app/ ./app/
 COPY database/ ./database/
