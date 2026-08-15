@@ -4,10 +4,12 @@ import { BrowserRouter } from 'react-router-dom'
 import './styles/tokens.css'
 import './styles/styles.css'
 import App from './App'
-import { ToastProvider } from './components/Toast'
+import { ToastProvider } from './shared/hooks'
 
 // Theme: inisialisasi sebelum render (sesuai localStorage)
-document.documentElement.dataset.theme = localStorage.getItem('kb-theme') === 'light' ? 'light' : ''
+const savedTheme = localStorage.getItem('kb_theme') || localStorage.getItem('kb-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+document.documentElement.setAttribute('data-theme', savedTheme)
+document.documentElement.dataset.theme = savedTheme
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -1,10 +1,10 @@
-# ==========================================
+# ==============================================================================
 # STAGE 1: Build Frontend SPA (React 19 + Bun)
-# ==========================================
+# ==============================================================================
 FROM oven/bun:alpine AS frontend-builder
 WORKDIR /build
 
-# Copy file dependency frontend & install
+# Copy dependency manifests & install
 COPY frontend/package.json frontend/bun.lock* ./
 RUN bun install --frozen-lockfile || bun install
 
@@ -12,38 +12,38 @@ RUN bun install --frozen-lockfile || bun install
 COPY frontend/ ./
 RUN bun run build
 
-# ==========================================
-# STAGE 2: Python Backend Runtime
-# ==========================================
-FROM python:3.13-slim
+# ==============================================================================
+# STAGE 2: Python Backend Runtime (FastAPI + ChromaDB + PyTorch CPU)
+# ==============================================================================
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install runtime system utilities
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy & install Python requirements (PyTorch CPU-only).
-# torch diinstall duluan dari index CPU; sentence-transformers lalu
-# memakainya tanpa menarik build CUDA raksasa dari PyPI.
+# Install Python requirements with PyTorch CPU-only first for efficiency
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy backend application code
+# Copy application source code & command runner
 COPY app/ ./app/
-COPY ingest.py ask.py query.py bulk_ingest.py run_dev.py ./
+COPY database/ ./database/
+COPY cortex.py ./
+COPY .env.example ./.env.example
 
-# Copy built static frontend assets dari Stage 1
+# Copy compiled static frontend SPA assets from Stage 1
 COPY --from=frontend-builder /app/static ./app/static
 
-# Buat folder data & uploads dengan permission yang sesuai
-RUN mkdir -p uploads data data/chroma_db
+# Initialize data and upload folders
+RUN mkdir -p /app/data /app/uploads /app/data/chroma_db
 
-# Set environment variables
+# Default environment configuration
 ENV PYTHONUNBUFFERED=1 \
     PERSIST_DIR=/app/data/chroma_db \
     UPLOAD_DIR=/app/uploads \
@@ -55,5 +55,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Command default untuk menjalankan FastAPI backend & menyajikan SPA
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start the Cortex web server
+CMD ["python", "cortex.py", "serve", "--host", "0.0.0.0", "--port", "8000"]

@@ -238,7 +238,20 @@ class SetCategoryRequest(BaseModel):
 
 class AnswerCardRequest(BaseModel):
     card_id: str = Field(..., min_length=1)
-    remembered: bool
+    remembered: bool | None = None
+    rating: int | None = Field(default=None, ge=1, le=4)
+
+
+class FlashcardGenerateRequest(BaseModel):
+    source: str | None = None
+    n: int = Field(default=5, ge=1, le=25)
+    save_to_deck: bool = True
+
+
+class CustomCardRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=1000)
+    answer: str = Field(..., min_length=1, max_length=5000)
+    source: str | None = None
 
 
 class QuizGenerateRequest(BaseModel):
@@ -343,8 +356,17 @@ def _ingest_file_job(
         if not chunks:
             raise ValueError("Tidak ada teks yang bisa diekstrak (PDF hasil scan?).")
 
-        final_path = settings.upload_dir / Path(staged.name).name
-        shutil.move(str(staged), str(final_path))
+        # Gunakan nama file asli bersih tanpa prefix uuid staging
+        clean_filename = Path(source).name if source else Path(staged.name).name
+        if len(clean_filename) > 33 and clean_filename[32] == "_" and all(c in "0123456789abcdefABCDEF" for c in clean_filename[:32]):
+            clean_filename = clean_filename[33:]
+        final_path = settings.upload_dir / clean_filename
+
+        if staged.exists():
+            if final_path.exists() and str(staged.resolve()) != str(final_path.resolve()):
+                _safe_unlink(final_path)
+            shutil.move(str(staged), str(final_path))
+
         n = _index_chunks(settings, store, source, category, chunks, job_id=job_id)
         db.update_document_status(
             settings.db_path, source, "ready",
@@ -414,7 +436,8 @@ def _watch_folder_loop(settings: Settings, store: VectorStore) -> None:
             try:
                 await asyncio.sleep(WATCH_FOLDER_INTERVAL_SEC)
                 indexed = {d["source"] for d in store.list_documents()}
-                pending = scan_pending(settings.upload_dir, indexed)
+                deleted = {d["source"] for d in db.list_deleted_documents(settings.db_path)}
+                pending = scan_pending(settings.upload_dir, indexed | deleted)
                 for path in pending:
                     source = path.name
                     cat = get_category_for_path(settings.upload_dir, path)
@@ -651,15 +674,47 @@ def privacy_info() -> dict:
 
 @app.delete("/privacy/data")
 def privacy_clear_all() -> dict:
-    """Hapus SEMUA data pribadi: chat, ringkasan, anotasi, quiz, kartu.
+    """Hapus SEMUA data pribadi termasuk dokumen terindeks (total wipe).
 
-    Indeks dokumen (ChromaDB) TIDAK dihapus. Untuk purge total dokumen,
-    gunakan delete per dokumen.
+    Membersihkan SQLite (chat, kuis, kartu, glossary, anotasi, registry
+    dokumen) + ChromaDB (seluruh chunk dokumen & semantic cache) + file
+    fisik upload (agar watch-folder tidak meng-indeks ulang).
     """
     settings: Settings = app.state.settings
+    store: VectorStore = app.state.store
     deleted = db.clear_all_user_data(settings.db_path)
+    # ChromaDB: buang seluruh chunk dokumen + semantic cache jawaban.
+    try:
+        store.reset()
+        deleted["chroma_documents"] = store.count()
+    except Exception:
+        logger.exception("privacy: gagal reset indeks dokumen")
+        deleted["chroma_documents"] = -1
+    try:
+        from app.semantic_cache import SemanticCache
+
+        deleted["semantic_cache"] = SemanticCache(store).clear()
+    except Exception:
+        logger.exception("privacy: gagal bersihkan semantic cache")
+        deleted["semantic_cache"] = -1
+    # File fisik upload + staging: tanpa ini watch-folder akan meng-indeks
+    # ulang dokumen yang baru saja dihapus.
+    deleted["upload_files"] = _purge_dir_files(settings.upload_dir)
+    deleted["staging_files"] = _purge_dir_files(settings.staging_dir)
     logger.warning("privacy: semua data pribadi dihapus: %s", deleted)
     return {"status": "ok", "deleted": deleted}
+
+
+def _purge_dir_files(directory: Path) -> int:
+    """Hapus semua file di dalam direktori (rekursif). Return jumlah file."""
+    if not directory.exists():
+        return 0
+    removed = 0
+    for f in directory.rglob("*"):
+        if f.is_file():
+            _safe_unlink(f, attempts=2)
+            removed += 1
+    return removed
 
 
 @app.delete("/privacy/cache")
@@ -1176,22 +1231,43 @@ class GlossaryExtractRequest(BaseModel):
     n: int = Field(default=10, ge=1, le=20)
 
 
+@app.get("/glossary")
 @app.get("/api/glossary")
 def list_glossary(
     q: str = "",
+    search: str = "",
     source: str | None = None,
     verified: bool | None = None,
     limit: int = 100,
 ) -> dict:
     settings: Settings = app.state.settings
+    query_term = q or search
     return {
         "status": "ok",
         "terms": db.list_glossary(
-            settings.db_path, search=q, source=source, verified=verified, limit=limit
+            settings.db_path, search=query_term, source=source, verified=verified, limit=limit
         ),
     }
 
 
+@app.get("/glossary/candidates")
+@app.get("/api/glossary/candidates")
+def get_glossary_candidates(source: str | None = None, limit: int = 10) -> dict:
+    """Ambil kandidat glossary dari dokumen via GET."""
+    engine: RAGEngine = app.state.engine
+    try:
+        candidates = glossary.extract_candidates(engine, source=source, limit=limit)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {
+        "status": "ok",
+        "source": source,
+        "candidates": candidates,
+        "review_required": True,
+    }
+
+
+@app.post("/glossary/extract")
 @app.post("/api/glossary/extract")
 def extract_glossary(req: GlossaryExtractRequest) -> dict:
     """Usulkan kandidat glossary dari dokumen; belum disimpan sebelum direview user."""
@@ -1208,6 +1284,7 @@ def extract_glossary(req: GlossaryExtractRequest) -> dict:
     }
 
 
+@app.post("/glossary", status_code=201)
 @app.post("/api/glossary", status_code=201)
 def create_glossary(req: GlossaryRequest) -> dict:
     settings: Settings = app.state.settings
@@ -1226,6 +1303,7 @@ def create_glossary(req: GlossaryRequest) -> dict:
     return {"status": "ok", "term": term}
 
 
+@app.put("/glossary/{term_id}")
 @app.put("/api/glossary/{term_id}")
 def update_glossary(term_id: int, req: GlossaryRequest) -> dict:
     settings: Settings = app.state.settings
@@ -1247,6 +1325,29 @@ def update_glossary(term_id: int, req: GlossaryRequest) -> dict:
     return {"status": "ok", "term": term}
 
 
+@app.put("/glossary/{term_id}/verify")
+@app.put("/api/glossary/{term_id}/verify")
+def toggle_verify_glossary(term_id: int) -> dict:
+    """Toggle status verifikasi istilah glosarium (Terverifikasi <-> Draf)."""
+    settings: Settings = app.state.settings
+    with db._conn(settings.db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM glossary_terms WHERE id = ?", (term_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Istilah tidak ditemukan.")
+        new_val = 0 if row["verified"] else 1
+        conn.execute(
+            "UPDATE glossary_terms SET verified = ?, updated_at = ? WHERE id = ?",
+            (new_val, db._now(), term_id),
+        )
+        updated = conn.execute(
+            "SELECT * FROM glossary_terms WHERE id = ?", (term_id,)
+        ).fetchone()
+    return {"status": "ok", "term": {**dict(updated), "verified": bool(updated["verified"])}}
+
+
+@app.delete("/glossary/{term_id}")
 @app.delete("/api/glossary/{term_id}")
 def delete_glossary(term_id: int) -> dict:
     settings: Settings = app.state.settings
@@ -1314,7 +1415,7 @@ def list_categories() -> dict:
     return {"status": "ok", "categories": db.list_all_categories(settings.db_path)}
 
 
-@app.put("/documents/{source}/category")
+@app.put("/documents/{source:path}/category")
 def set_document_category(source: str, req: SetCategoryRequest) -> dict:
     settings: Settings = app.state.settings
     store: VectorStore = app.state.store
@@ -1347,75 +1448,145 @@ def locations(q: str = "", top_k: int = 15) -> dict:
     }
 
 
-@app.delete("/documents/{source}")
+@app.delete("/documents/{source:path}")
 def delete_document(source: str, purge: bool = False) -> dict:
-    """Hapus dokumen dari indeks.
-
-    Default = archive: index dibuang, file fisik & registry dipertahankan
-    (bisa di-upload ulang, tercatat di deleted-documents). purge=true =
-    purge total: index + file fisik + mapping kategori + registry dihapus.
-    """
+    """Hapus dokumen dari indeks dan database."""
     store: VectorStore = app.state.store
     settings: Settings = app.state.settings
+    doc_exists = bool(db.get_document(settings.db_path, source))
     removed = store.delete_document(source)
-    if removed == 0:
+    if removed == 0 and not doc_exists:
         raise HTTPException(
             status_code=404, detail=f"Dokumen '{source}' tidak ditemukan."
         )
+    
+    # Catat ke deleted documents agar grounding & watch-folder tahu
     db.record_deleted_document(settings.db_path, source)
-    if purge:
-        doc = db.get_document(settings.db_path, source)
-        if doc and doc.get("file_path"):
-            try:
-                upload_root = settings.upload_dir.resolve()
-                fp = Path(doc["file_path"]).resolve()
-                if fp.is_relative_to(upload_root):
-                    fp.unlink(missing_ok=True)
-                    logger.info("purge: file fisik dihapus: %s", fp)
-            except Exception:
-                logger.exception("purge: gagal hapus file fisik %s", source)
-        db.delete_document_category_mapping(settings.db_path, source)
-        db.purge_document(settings.db_path, source)
-    else:
-        db.update_document_status(settings.db_path, source, "deleted")
-    return {"status": "ok", "source": source, "removed": removed, "purged": purge}
+    
+    # Hapus file fisik dari folder uploads jika ada agar tidak re-indeks otomatis
+    try:
+        cand1 = settings.upload_dir / source
+        if cand1.exists() and cand1.is_file():
+            cand1.unlink(missing_ok=True)
+            logger.info("purge: physical file deleted: %s", cand1)
+        cand2 = settings.upload_dir / Path(source).name
+        if cand2.exists() and cand2.is_file():
+            cand2.unlink(missing_ok=True)
+            logger.info("purge: physical file deleted: %s", cand2)
+    except Exception as exc:
+        logger.warning("purge file error: %s", exc)
+
+    # Bersihkan dari registry DB dan kategori
+    db.delete_document_category_mapping(settings.db_path, source)
+    db.purge_document(settings.db_path, source)
+
+    return {"status": "ok", "source": source, "removed": removed, "purged": True}
 
 
 # ----------------------------------------------------------------------
-# Learning loop (fitur #1-#5) — review mode, weak-spot, progress, quiz, flashcards
+# ----------------------------------------------------------------------
+# Learning loop — review mode, weak-spot, progress, quiz, flashcards
 # ----------------------------------------------------------------------
 @app.get("/learning/due")
-def learning_due(limit: int = 10) -> dict:
-    """Kartu review yang jatuh tempo (fitur #1)."""
+@app.get("/api/learning/due")
+def learning_due(source: str | None = None, limit: int = 20) -> dict:
+    """Kartu yang sudah waktunya diulang (SM-2 scheduler)."""
     settings: Settings = app.state.settings
     learning.sync_cards(settings.db_path)
     return {
         "status": "ok",
-        "cards": learning.due_cards(settings.db_path, limit=limit),
-        "stats": learning.card_stats(settings.db_path),
+        "cards": learning.due_cards(settings.db_path, source=source, limit=limit),
+        "stats": learning.card_stats(settings.db_path, source=source),
     }
 
 
 @app.post("/learning/answer")
+@app.post("/api/learning/answer")
 def learning_answer(req: AnswerCardRequest) -> dict:
-    """Catat jawaban kartu review: remembered=True naikkan interval (#1)."""
+    """Catat jawaban kartu review SM-2: remembered=True / rating 1-4."""
     settings: Settings = app.state.settings
+    rating_val = req.rating if req.rating is not None else req.remembered
     try:
         card = learning.answer_card(
-            settings.db_path, req.card_id, req.remembered
+            settings.db_path, req.card_id, rating_val
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     return {"status": "ok", "card": card}
 
 
-@app.get("/learning/weak-spots")
-def learning_weak_spots(limit: int = 8) -> dict:
-    """Topik yang paling sering diulang / sering lupa (#2, P2-03).
+@app.get("/learning/cards")
+@app.get("/api/learning/cards")
+def learning_list_cards(source: str | None = None, limit: int = 100) -> dict:
+    """Daftar seluruh kartu di review_cards."""
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "cards": learning.list_review_cards(settings.db_path, source=source, limit=limit),
+        "stats": learning.card_stats(settings.db_path, source=source),
+    }
 
-    Sekarang berbasis bukti correctness nyata: lapses review, jawaban
-    flashcard salah, dan jawaban quiz salah — bukan hanya frekuensi tanya.
-    """
+
+@app.post("/learning/flashcards/generate")
+@app.post("/api/learning/flashcards/generate")
+def learning_flashcards_generate(req: FlashcardGenerateRequest) -> dict:
+    """Generate high-yield Active Recall Q&A Flashcards using LLM."""
+    engine: RAGEngine = app.state.engine
+    settings: Settings = app.state.settings
+    try:
+        cards = learning.generate_flashcards(engine, source=req.source, n=req.n)
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    if not cards:
+        raise HTTPException(
+            status_code=400, detail="Tidak ada materi untuk membuat flashcard."
+        )
+
+    saved = []
+    if req.save_to_deck:
+        saved = learning.save_flashcards_to_deck(settings.db_path, cards)
+
+    return {
+        "status": "ok",
+        "source": req.source,
+        "cards": cards,
+        "saved_cards": saved,
+    }
+
+
+@app.post("/learning/flashcards/custom")
+@app.post("/api/learning/flashcards/custom")
+def learning_flashcards_custom(req: CustomCardRequest) -> dict:
+    """Buat kartu review manual custom."""
+    settings: Settings = app.state.settings
+    card = learning.create_custom_card(
+        settings.db_path, req.question, req.answer, req.source
+    )
+    return {"status": "ok", "card": card}
+
+
+@app.delete("/learning/flashcards/{card_id}")
+@app.delete("/api/learning/flashcards/{card_id}")
+def learning_flashcards_delete(card_id: str) -> dict:
+    """Hapus kartu review dari dek."""
+    settings: Settings = app.state.settings
+    if not learning.delete_review_card(settings.db_path, card_id):
+        raise HTTPException(status_code=404, detail="Kartu tidak ditemukan.")
+    return {"status": "ok", "card_id": card_id}
+
+
+@app.get("/learning/recommendations")
+@app.get("/api/learning/recommendations")
+def learning_get_recommendations() -> dict:
+    """Rekomendasi belajar cerdas dan aksi perbaikan weak-spots."""
+    settings: Settings = app.state.settings
+    return learning.learning_recommendations(settings.db_path)
+
+
+@app.get("/learning/weak-spots")
+@app.get("/api/learning/weak-spots")
+def learning_weak_spots(limit: int = 8) -> dict:
+    """Topik yang paling sering diulang / sering lupa (#2, P2-03)."""
     settings: Settings = app.state.settings
     return {
         "status": "ok",
@@ -1424,24 +1595,54 @@ def learning_weak_spots(limit: int = 8) -> dict:
     }
 
 
-@app.get("/learning/progress")
-def learning_progress() -> dict:
-    """Bab per dokumen yang sudah/belum dibahas (#3)."""
+@app.get("/learning/mastery")
+@app.get("/api/learning/mastery")
+def learning_mastery() -> dict:
+    """Mastery per dokumen: exposure vs correctness (P2-03).
+
+    Dipakai halaman Progress (learningService.getMastery).
+    """
     settings: Settings = app.state.settings
+    return {"status": "ok", "mastery": learning.mastery_stats(settings.db_path)}
+
+
+@app.get("/learning/mindmap")
+@app.get("/api/learning/mindmap")
+def learning_mindmap(source: str | None = None) -> dict:
+    """Peta konsep (tree) dari heading dokumen terindeks."""
+    store: VectorStore = app.state.store
+    return {"status": "ok", "mindmap": learning.mindmap_tree(store, source=source)}
+
+
+@app.get("/learning/summary")
+@app.get("/api/learning/summary")
+def learning_summary(source: str) -> dict:
+    """Ringkasan otomatis satu dokumen via LLM."""
+    engine: RAGEngine = app.state.engine
     return {
         "status": "ok",
-        "documents": learning.document_progress(settings.db_path),
+        "source": source,
+        "summary": learning.document_summary(engine, source),
     }
 
 
-@app.post("/learning/quiz/generate")
-def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
-    """Buat soal pilihan ganda dari materi (#4, P2-04).
+@app.get("/learning/progress")
+@app.get("/api/learning/progress")
+def learning_progress() -> dict:
+    """Bab per dokumen yang sudah/belum dibahas (#3).
 
-    Paket soal + kunci jawaban disimpan server-side; client menerima
-    attempt_id + soal TANPA kunci jawaban. Skor dihitung deterministik
-    saat grade — client tidak bisa mengirim soal sembarangan.
+    Key `progress` dipakai frontend; `documents` dipertahankan untuk
+    kompatibilitas konsumen lama.
     """
+    settings: Settings = app.state.settings
+    docs = learning.document_progress(settings.db_path)
+    return {"status": "ok", "documents": docs, "progress": docs}
+
+
+@app.post("/learning/quiz/generate")
+@app.post("/api/learning/quiz/generate")
+def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
+    """Buat soal pilihan ganda dari materi (#4, P2-04)."""
     engine: RAGEngine = app.state.engine
     settings: Settings = app.state.settings
     try:
@@ -1462,22 +1663,34 @@ def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
 
 
 @app.post("/learning/quiz/grade")
+@app.post("/api/learning/quiz/grade")
 def learning_quiz_grade(req: QuizGradeRequest) -> dict:
     """Koreksi jawaban kuis secara DETERMINISTIK dari kunci server (P2-04).
 
-    LLM tidak menentukan skor — skor selalu cocok dengan detail per soal.
+    Pembahasan per soal dihasilkan LLM (opsional, tidak mengubah skor);
+    bila LLM gagal, hasil tetap dikembalikan tanpa pembahasan.
     """
     settings: Settings = app.state.settings
+    engine: RAGEngine = app.state.engine
     try:
         result = learning.grade_quiz_attempt(
             settings.db_path, req.attempt_id, req.answers
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+
+    explanations = learning.explain_quiz_questions(
+        engine, settings.db_path, req.attempt_id, req.answers
+    )
+    if explanations:
+        for i, detail in enumerate(result["details"]):
+            if i < len(explanations):
+                detail["explanation"] = explanations[i]
     return {"status": "ok", **result}
 
 
 @app.get("/learning/quiz/history")
+@app.get("/api/learning/quiz/history")
 def learning_quiz_history(limit: int = 20) -> dict:
     settings: Settings = app.state.settings
     return {
@@ -1486,17 +1699,48 @@ def learning_quiz_history(limit: int = 20) -> dict:
     }
 
 
+@app.get("/learning/quiz/attempts/{attempt_id}")
+@app.get("/api/learning/quiz/attempts/{attempt_id}")
+def learning_quiz_attempt_detail(attempt_id: str) -> dict:
+    """Pembahasan ulang: soal + kunci jawaban satu attempt kuis (dari riwayat)."""
+    settings: Settings = app.state.settings
+    detail = learning.quiz_attempt_detail(settings.db_path, attempt_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=404, detail="Attempt kuis tidak ditemukan."
+        )
+    return {"status": "ok", **detail}
+
+
 @app.get("/learning/flashcards")
-def learning_flashcards(source: str | None = None, limit: int = 20) -> dict:
-    """Kartu Q&A dari heading dokumen, tanpa LLM (#5)."""
+@app.get("/api/learning/flashcards")
+def learning_flashcards(
+    source: str | None = None, limit: int = 20, refresh: bool = False
+) -> dict:
+    """Kartu Q&A untuk tab Eksplorasi Dokumen.
+
+    Prioritas: LLM menentukan konten (konsep/pertanyaan + penjelasan
+    ringkas, di-cache per sumber), fallback heading/chunk bila LLM tidak
+    tersedia. `refresh=true` memaksa regenerasi (lewati cache).
+    """
+    settings: Settings = app.state.settings
     store: VectorStore = app.state.store
+    engine: RAGEngine = app.state.engine
     return {
         "status": "ok",
-        "cards": learning.flashcards(store, source=source, limit=limit),
+        "cards": learning.flashcards(
+            store,
+            source=source,
+            limit=limit,
+            engine=engine,
+            db_path=settings.db_path,
+            force=refresh,
+        ),
     }
 
 
 @app.post("/learning/flashcards/answer")
+@app.post("/api/learning/flashcards/answer")
 def learning_flashcards_answer(req: FlashcardAnswerRequest) -> dict:
     """Catat tahu/belum sebuah kartu flashcard."""
     settings: Settings = app.state.settings
@@ -1509,6 +1753,7 @@ def learning_flashcards_answer(req: FlashcardAnswerRequest) -> dict:
 
 
 @app.get("/learning/flashcards/stats")
+@app.get("/api/learning/flashcards/stats")
 def learning_flashcards_stats(limit: int = 50) -> dict:
     """Statistik kartu: tahu vs belum, urut paling sering salah."""
     settings: Settings = app.state.settings

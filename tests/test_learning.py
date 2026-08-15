@@ -5,6 +5,8 @@ Jalankan: pytest tests/test_learning.py -q
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -341,6 +343,122 @@ def test_flashcards_from_store(tmp_path: Path) -> None:
         store.close()
 
 
+def test_flashcards_llm_logical_and_cache(tmp_path: Path) -> None:
+    """Tab Eksplorasi Dokumen: LLM menentukan konten Q&A logis; hasil di-cache."""
+    store = _make_store(tmp_path)
+    llm = FakeLLM(text=json.dumps([
+        {
+            "heading": "Apa fungsi VLAN?",
+            "content": "Memisahkan domain broadcast untuk efisiensi jaringan.",
+            "source": "materi_jaringan.pdf",
+        },
+        {
+            "heading": "Kenapa antar-VLAN perlu routing?",
+            "content": "Karena VLAN terisolasi; komunikasi lintas-VLAN butuh router.",
+            "source": "materi_jaringan.pdf",
+        },
+    ]))
+    engine = RAGEngine(store=store, llm=llm)
+    path = tmp_path / "flash_llm.db"
+    db.init_db(path)
+    try:
+        cards = learning.flashcards(store, limit=5, engine=engine, db_path=path)
+        assert len(cards) == 2, "kartu LLM menentukan kontennya sendiri"
+        assert cards[0]["heading"] == "Apa fungsi VLAN?"
+        assert cards[0]["content"] == "Memisahkan domain broadcast untuk efisiensi jaringan."
+        assert cards[0]["source"] == "materi_jaringan.pdf"
+        assert llm.calls == 1
+
+        # cache: kunjungan berikutnya tidak memanggil LLM lagi
+        again = learning.flashcards(store, limit=5, engine=engine, db_path=path)
+        assert llm.calls == 1
+        assert again == cards
+
+        # force: regenerasi melewati cache
+        learning.flashcards(store, limit=5, engine=engine, db_path=path, force=True)
+        assert llm.calls == 2
+    finally:
+        store.close()
+
+
+def test_flashcards_llm_fallback_when_unavailable(tmp_path: Path) -> None:
+    """LLM gagal / respons tak valid → fallback kartu heading/chunk (kontrak lama)."""
+    store = _make_store(tmp_path)
+    engine = RAGEngine(store=store, llm=FakeLLM(text="bukan json sama sekali"))
+    path = tmp_path / "flash_fallback.db"
+    db.init_db(path)
+    try:
+        cards = learning.flashcards(store, limit=3, engine=engine, db_path=path)
+        assert cards, "fallback harus tetap menghasilkan kartu"
+        assert all({"heading", "content"} <= set(c) for c in cards)
+    finally:
+        store.close()
+
+
+def test_mindmap_tree_from_store(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        tree = learning.mindmap_tree(store)
+        assert tree["name"] == "Knowledge Base"
+        assert tree["children"], "harus ada node sumber dokumen"
+        assert any(c["name"] == "materi_jaringan.pdf" for c in tree["children"])
+
+        filtered = learning.mindmap_tree(store, source="materi_jaringan.pdf")
+        assert filtered["name"] == "materi_jaringan.pdf"
+        assert filtered["children"], "heading dokumen menjadi anak root"
+    finally:
+        store.close()
+
+
+def test_review_cards_legacy_schema_migrated(tmp_path: Path) -> None:
+    """DB lama tanpa created_at (schema pra-SM-2) harus sembuh sendiri.
+
+    Reproduksi bug runtime: "table review_cards has no column named created_at"
+    pada POST /learning/flashcards/generate di DB produksi.
+    """
+    path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE review_cards (
+            card_id       TEXT PRIMARY KEY,
+            question      TEXT NOT NULL,
+            source        TEXT,
+            next_due      TEXT NOT NULL,
+            interval_days INTEGER NOT NULL DEFAULT 1,
+            lapses        INTEGER NOT NULL DEFAULT 0,
+            last_reviewed TEXT
+        );
+        INSERT INTO review_cards (card_id, question, source, next_due)
+        VALUES ('legacy-1', 'Apa itu VLAN?', 'materi.pdf', '2026-01-01T00:00:00+00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db(path)
+    # Simulasi alur POST /learning/flashcards/generate (save_to_deck)
+    saved = learning.save_flashcards_to_deck(
+        path,
+        [
+            {
+                "front": "Apa fungsi OSPF?",
+                "back": "Link-state routing protocol.",
+                "source": "materi.pdf",
+            }
+        ],
+    )
+    assert len(saved) == 1
+
+    # Baris lama ikut termigrasi: created_at terisi, kolom SM-2 ada
+    rows = learning.list_review_cards(path)
+    legacy = next(r for r in rows if r["card_id"] == "legacy-1")
+    assert legacy["created_at"], "baris legacy harus punya created_at hasil migrasi"
+    assert legacy["ease_factor"] == 2.5
+    assert legacy["answer"] == ""
+    assert legacy["interval_days"] == 1
+
+
 def main() -> None:
     import tempfile
 
@@ -356,6 +474,10 @@ def main() -> None:
         test_flashcard_answer_and_stats(tmp_path)
         test_quiz_history(tmp_path)
         test_flashcards_from_store(tmp_path)
+        test_flashcards_llm_logical_and_cache(tmp_path)
+        test_flashcards_llm_fallback_when_unavailable(tmp_path)
+        test_mindmap_tree_from_store(tmp_path)
+        test_review_cards_legacy_schema_migrated(tmp_path)
     print("\nSemua test learning PASS ✔")
 
 

@@ -1,207 +1,245 @@
-import { useEffect, useState } from 'react'
-import { api, type PrivacyInfo } from '../api'
-import { Icon } from '../components/Icon'
-import { usePageHeader } from '../components/PageHeader'
-import { useToast } from '../components/Toast'
+import React, { useEffect, useState } from 'react'
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  Icon,
+  Input,
+  PageHeader,
+  Spinner,
+  StatCard,
+} from '../shared/components'
+import { useTheme, useToast } from '../shared/hooks'
+import { systemService } from '../shared/services'
+import type { PrivacyInfo } from '../shared/types'
 
-interface Metrics {
-  cache_hits: number
-  cache_misses: number
-  queries: number
-  llm_errors: number
-}
-
-/** Halaman /settings — Control Panel System & Integrasi Eksternal. */
 export default function Settings() {
-  const toast = useToast()
-  const [metrics, setMetrics] = useState<Metrics | null>(null)
-  const [health, setHealth] = useState<string>('')
-  const [docCount, setDocCount] = useState<number | null>(null)
-  const [privacy, setPrivacy] = useState<PrivacyInfo | null>(null)
-  const [theme, setTheme] = useState(() => (localStorage.getItem('kb-theme') === 'light' ? 'light' : 'dark'))
+  const { theme, toggleTheme, isDark } = useTheme()
+  const { addToast } = useToast()
+  const [privacyInfo, setPrivacyInfo] = useState<PrivacyInfo | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  usePageHeader({ eyebrow: 'KONFIGURASI & SISTEM', title: 'Settings & Metrics' })
+  // API Token
+  const [token, setToken] = useState(() => localStorage.getItem('kb_api_token') || '')
+
+  // Purge Dialogs
+  const [isWipeDialogOpen, setIsWipeDialogOpen] = useState(false)
+  const [isCacheDialogOpen, setIsCacheDialogOpen] = useState(false)
+  const [purging, setPurging] = useState(false)
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [m, h, d] = await Promise.all([
-          api<Metrics>('/metrics'),
-          api<{ status: string }>('/health'),
-          api<{ documents: unknown[] }>('/documents'),
-        ])
-        setMetrics(m)
-        setHealth(h.status)
-        setDocCount(d.documents.length)
-      } catch (error) {
-        toast(error instanceof Error ? error.message : 'Gagal memuat info sistem.')
-      }
-    })()
-  }, [toast])
-
-  // Info privasi dipisah agar kegagalan /privacy/info tidak mengganggu metrik lain.
-  useEffect(() => {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 4000)
-    void (async () => {
-      try {
-        const res = await fetch('/privacy/info', { signal: controller.signal })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        setPrivacy((await res.json()) as PrivacyInfo)
-      } catch {
-        setPrivacy(null)
-      } finally {
-        clearTimeout(timer)
-      }
-    })()
-    return () => {
-      clearTimeout(timer)
-      controller.abort()
-    }
+    loadPrivacyInfo()
   }, [])
 
-  function toggleTheme() {
-    const next = theme === 'light' ? 'dark' : 'light'
-    setTheme(next)
-    document.documentElement.dataset.theme = next === 'light' ? 'light' : ''
-    localStorage.setItem('kb-theme', next)
-    toast(`Tema diubah ke mode ${next === 'light' ? 'Terang' : 'Gelap'}.`)
+  const loadPrivacyInfo = async () => {
+    setLoading(true)
+    try {
+      const res = await systemService.getPrivacyInfo()
+      setPrivacyInfo(res)
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false)
+    }
   }
 
-  function copyToClipboard(text: string, label: string) {
-    void navigator.clipboard.writeText(text)
-    toast(`${label} disalin ke clipboard! 📋`)
+  const handleSaveToken = () => {
+    localStorage.setItem('kb_api_token', token.trim())
+    addToast('Bearer API Token berhasil disimpan!', 'success')
   }
 
-  const total = metrics ? metrics.cache_hits + metrics.cache_misses : 0
-  const hitRate = total > 0 ? Math.round((metrics!.cache_hits / total) * 100) : 0
+  const handleWipeUserData = async () => {
+    setPurging(true)
+    try {
+      const res = await systemService.clearUserData()
+      addToast('Seluruh data pribadi (termasuk dokumen) berhasil dihapus!', 'success')
+      setIsWipeDialogOpen(false)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal menghapus data pribadi.', 'error')
+    } finally {
+      setPurging(false)
+    }
+  }
+
+  const handleClearCache = async () => {
+    setPurging(true)
+    try {
+      const res = await systemService.clearSemanticCache()
+      addToast(`Semantic cache dibersihkan (${res.cleared_entries} entri)!`, 'success')
+      setIsCacheDialogOpen(false)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal membersihkan cache.', 'error')
+    } finally {
+      setPurging(false)
+    }
+  }
 
   return (
-    <div className="page-content">
-      <div className="library-grid">
-        {/* Card Tampilan & Tema */}
-        <section className="library-card" aria-labelledby="set-theme-label">
-          <div className="section-label-row">
-            <h2 id="set-theme-label">🎨 Tema Tampilan</h2>
-            <span className="badge">{theme.toUpperCase()} MODE</span>
+    <div className="page-container" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      <PageHeader
+        title="Pengaturan & Preferensi"
+        subtitle="Kelola tema antarmuka, keamanan token otentikasi, privasi data PII, dan cache semantic."
+      />
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '1.75rem' }}>
+        {/* Appearance Card */}
+        <Card padding="lg">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+            <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-sm)', background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name={isDark ? 'moon' : 'sun'} size={20} />
+            </div>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>Tampilan & Tema</h3>
           </div>
-          <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted)', marginBottom: 'var(--space-3)' }}>
-            Pilih tema antarmuka sesuai kenyamanan Anda saat membaca materi.
+          <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: '1.6' }}>
+            Sesuaikan palet visual antara Cyber Dark Mode dan Frost Light Mode.
           </p>
-          <button
-            className="button button-secondary"
-            type="button"
-            onClick={toggleTheme}
-            style={{ width: '100%', justifyContent: 'center' }}
-          >
-            <Icon name="i-theme" /> Switch ke Mode {theme === 'light' ? 'Gelap (Dark Slate)' : 'Terang (Light)'}
-          </button>
-        </section>
-
-        {/* Card Status & Kesehatan Sistem */}
-        <section className="library-card" aria-labelledby="set-sys-label">
-          <div className="section-label-row">
-            <h2 id="set-sys-label">⚡ Status & Metrik Performa</h2>
-            <span className="badge">LIVE METRICS</span>
-          </div>
-
-          <div className="repeated-item" style={{ padding: '0.5rem 0.75rem' }}>
-            <span className="repeated-question">Status API Backend</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <span className="status-dot" style={{ background: health === 'ok' ? 'var(--color-success)' : 'var(--color-error)' }} />
-              <small style={{ fontWeight: 700, color: health === 'ok' ? 'var(--color-success)' : 'var(--color-error)' }}>
-                {health ? health.toUpperCase() : 'MEMUAT…'}
-              </small>
-            </div>
-          </div>
-
-          <div className="repeated-item" style={{ padding: '0.5rem 0.75rem' }}>
-            <span className="repeated-question">Dokumen Terindeks</span>
-            <small style={{ fontWeight: 700, color: 'var(--color-ink)' }}>{docCount ?? '…'} dokumen</small>
-          </div>
-
-          <div className="repeated-item" style={{ padding: '0.5rem 0.75rem' }}>
-            <span className="repeated-question">Total Query RAG</span>
-            <small style={{ fontWeight: 700, color: 'var(--color-ink)' }}>{metrics?.queries ?? '…'} kali</small>
-          </div>
-
-          {/* Cache Hit Rate Meter */}
-          <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-3)', background: 'var(--color-paper-soft)', borderRadius: 'var(--radius-md)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.3rem' }}>
-              <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600 }}>Semantic Cache Hit Rate</span>
-              <span style={{ fontSize: 'var(--text-xs)', fontWeight: 700, color: 'var(--color-accent)' }}>
-                {total ? `${hitRate}% (${metrics!.cache_hits}/${total})` : '0%'}
-              </span>
-            </div>
-            <div className="progress-track" style={{ height: '0.4rem' }}>
-              <div className="progress-fill" style={{ width: `${hitRate}%` }} />
-            </div>
-          </div>
-
-          <div className="repeated-item" style={{ padding: '0.5rem 0.75rem', marginTop: 'var(--space-2)' }}>
-            <span className="repeated-question">Error LLM Client</span>
-            <small style={{ fontWeight: 700, color: metrics?.llm_errors ? 'var(--color-error)' : 'var(--color-success)' }}>
-              {metrics?.llm_errors ?? 0} error
-            </small>
-          </div>
-        </section>
-
-        {/* Card Akses & Integrasi Eksternal */}
-        <section className="library-card" aria-labelledby="set-access-label" style={{ gridColumn: 'span 2' }}>
-          <div className="section-label-row">
-            <h2 id="set-access-label">🔌 Integrasi MCP Server & Bot Telegram</h2>
-            <span className="badge">INTEGRATION HUB</span>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(20rem, 1fr))', gap: 'var(--space-4)', marginTop: 'var(--space-2)' }}>
-            {/* MCP Server Box */}
-            <div style={{ padding: 'var(--space-4)', border: '1px solid var(--color-rule)', borderRadius: 'var(--radius-md)', background: 'var(--color-paper-raised)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
-                <Icon name="i-zap" />
-                <strong style={{ fontSize: 'var(--text-sm)' }}>Model Context Protocol (MCP) Server</strong>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-surface-raised)', padding: '1rem 1.25rem', borderRadius: 'var(--radius-md)' }}>
+            <div>
+              <div style={{ fontSize: '0.9rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                {isDark ? '🌙 Dark Cyber Slate' : '☀️ Light Frost Glass'}
               </div>
-              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted)', marginBottom: 'var(--space-3)' }}>
-                Hubungkan Knowledge Base ini dengan Claude Desktop atau tool AI lainnya via standar MCP protocol.
-              </p>
-              <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-                <code style={{ flex: 1, padding: '0.4rem 0.6rem', background: 'var(--color-paper)', borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
-                  .venv\Scripts\python -m app.mcp_server
-                </code>
-                <button
-                  className="button button-secondary"
-                  style={{ minHeight: '32px', padding: '0 0.6rem', fontSize: '0.7rem' }}
-                  onClick={() => copyToClipboard('.venv\\Scripts\\python -m app.mcp_server', 'Perintah MCP Server')}
-                >
-                  Salin
-                </button>
-              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>OKLCH High-Contrast</div>
             </div>
-
-            {/* Telegram Bot Box */}
-            <div style={{ padding: 'var(--space-4)', border: '1px solid var(--color-rule)', borderRadius: 'var(--radius-md)', background: 'var(--color-paper-raised)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
-                <Icon name="i-chat" />
-                <strong style={{ fontSize: 'var(--text-sm)' }}>Bot Telegram Knowledge Base</strong>
-              </div>
-              <p style={{ fontSize: 'var(--text-xs)', color: 'var(--color-muted)', marginBottom: 'var(--space-3)' }}>
-                Jalankan bot Telegram untuk berinteraksi dengan RAG langsung dari pesan singkat (butuh <code>TELEGRAM_BOT_TOKEN</code> di file <code>.env</code>).
-              </p>
-              <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-                <code style={{ flex: 1, padding: '0.4rem 0.6rem', background: 'var(--color-paper)', borderRadius: 'var(--radius-sm)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
-                  .venv\Scripts\python -m app.telegram_bot
-                </code>
-                <button
-                  className="button button-secondary"
-                  style={{ minHeight: '32px', padding: '0 0.6rem', fontSize: '0.7rem' }}
-                  onClick={() => copyToClipboard('.venv\\Scripts\\python -m app.telegram_bot', 'Perintah Bot Telegram')}
-                >
-                  Salin
-                </button>
-              </div>
-            </div>
+            <Button variant="secondary" size="sm" icon={isDark ? 'sun' : 'moon'} onClick={toggleTheme}>
+              Beralih ke {isDark ? 'Light' : 'Dark'}
+            </Button>
           </div>
-        </section>
+        </Card>
+
+        {/* API Token Security */}
+        <Card padding="lg">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+            <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-sm)', background: 'var(--cyan-bg)', color: 'var(--cyan)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="shield" size={20} />
+            </div>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>API Authentication Token</h3>
+          </div>
+          <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', marginBottom: '1rem', lineHeight: '1.6' }}>
+            Masukkan Bearer token rahasia bila backend diproteksi dengan <code>AUTH_API_TOKEN</code>.
+          </p>
+          <div style={{ display: 'flex', gap: '0.75rem' }}>
+            <div style={{ flex: 1 }}>
+              <Input
+                type="password"
+                placeholder="Bearer token otentikasi..."
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+              />
+            </div>
+            <Button variant="primary" icon="check" size="md" onClick={handleSaveToken}>
+              Simpan
+            </Button>
+          </div>
+        </Card>
       </div>
+
+      {/* Privacy & Data Flow Information */}
+      <Card padding="lg">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+          <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-sm)', background: 'var(--success-bg)', color: 'var(--success)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="shield" size={20} />
+          </div>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>Keterbukaan Alur Data & Privasi</h3>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: '3rem', display: 'flex', justifyContent: 'center' }}>
+            <Spinner size="md" text="Memuat informasi privasi..." />
+          </div>
+        ) : (
+          <div>
+            <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.65', marginBottom: '1.5rem' }}>
+              {privacyInfo?.disclosure_text}
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
+              <div style={{ padding: '1rem 1.15rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>LLM Provider</div>
+                <div style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)', marginTop: '0.25rem' }}>
+                  {privacyInfo?.provider_label}
+                </div>
+              </div>
+
+              <div style={{ padding: '1rem 1.15rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Sensor PII Otomatis</div>
+                <div style={{ fontWeight: '700', fontSize: '0.95rem', color: privacyInfo?.redaction_active ? 'var(--success)' : 'var(--warning)', marginTop: '0.25rem' }}>
+                  {privacyInfo?.redaction_active ? '🛡️ Aktif (Sensitif Disensor)' : '⚠️ Nonaktif'}
+                </div>
+              </div>
+
+              <div style={{ padding: '1rem 1.15rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Retensi Sesi Chat</div>
+                <div style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)', marginTop: '0.25rem' }}>
+                  {privacyInfo?.retention_days ? `${privacyInfo.retention_days} Hari` : 'Tanpa Batas'}
+                </div>
+              </div>
+
+              <div style={{ padding: '1rem 1.15rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>TTL Semantic Cache</div>
+                <div style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)', marginTop: '0.25rem' }}>
+                  {privacyInfo?.cache_max_days ? `${privacyInfo.cache_max_days} Hari` : 'Tanpa Batas'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Maintenance & Danger Zone */}
+      <Card padding="lg" style={{ border: '1px solid oklch(from var(--error) l c h / 0.35)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+          <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-sm)', background: 'var(--error-bg)', color: 'var(--error)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="trash" size={20} />
+          </div>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--error)' }}>Zona Pemeliharaan & Data Wipe</h3>
+        </div>
+
+        <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: '1.6' }}>
+          Aksi di bawah ini bersifat permanen. Gunakan saat Anda ingin mereset cache jawaban atau menghapus jejak riwayat aktivitas pembelajaran Anda.
+        </p>
+
+        <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap' }}>
+          <Button
+            variant="secondary"
+            icon="refresh"
+            onClick={() => setIsCacheDialogOpen(true)}
+            disabled={purging}
+          >
+            Bersihkan Semantic Cache
+          </Button>
+          <Button
+            variant="danger"
+            icon="trash"
+            onClick={() => setIsWipeDialogOpen(true)}
+            disabled={purging}
+          >
+            Hapus Semua Riwayat Data Pribadi
+          </Button>
+        </div>
+      </Card>
+
+      {/* Wipe User Data Dialog */}
+      <ConfirmDialog
+        isOpen={isWipeDialogOpen}
+        title="Hapus Semua Data Pribadi?"
+        description="Aksi ini akan menghapus SEMUA data Anda secara permanen: percakapan, riwayat kuis, kartu flashcards, catatan, glossary, dan seluruh dokumen yang terindeks (perpustakaan ikut dikosongkan)."
+        confirmText="Hapus Seluruh Data"
+        loading={purging}
+        onConfirm={handleWipeUserData}
+        onCancel={() => setIsWipeDialogOpen(false)}
+      />
+
+      {/* Clear Cache Dialog */}
+      <ConfirmDialog
+        isOpen={isCacheDialogOpen}
+        title="Bersihkan Semantic Cache?"
+        description="Semua cache query jawaban instan akan dikosongkan. Pertanyaan berikutnya akan diproses ulang melalui LLM."
+        confirmText="Kosongkan Cache"
+        loading={purging}
+        onConfirm={handleClearCache}
+        onCancel={() => setIsCacheDialogOpen(false)}
+      />
     </div>
   )
 }

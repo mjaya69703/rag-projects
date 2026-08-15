@@ -5,6 +5,7 @@ Jalankan: python tests/test_api.py  atau  pytest tests/test_api.py -v
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -249,8 +250,9 @@ def test_query_deleted_document_grounding() -> None:
 
 
 def test_learning_flashcards_and_due() -> None:
-    """Flashcards dari heading (tanpa LLM) + kartu review jatuh tempo."""
+    """Flashcards dari heading (fallback LLM) + kartu review jatuh tempo."""
     with TestClient(app) as client:
+        _use_mock_llm(client)  # deterministik: jangan panggil LLM asli
         _upload_wait(
             client,
             files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
@@ -279,6 +281,88 @@ def test_locations_endpoint() -> None:
         assert locs
         assert locs[0]["source"] == "sample_api.pdf"
         assert client.get("/locations").json()["locations"] == []
+
+
+def test_learning_mastery_endpoint() -> None:
+    """Halaman Progress memanggil /learning/mastery — harus 200 dengan shape benar."""
+    with TestClient(app) as client:
+        resp = client.get("/learning/mastery")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert isinstance(body["mastery"], list)
+        # alias /api juga tersedia
+        assert client.get("/api/learning/mastery").status_code == 200
+
+
+def test_learning_progress_shape() -> None:
+    """Frontend membaca key `progress`; backend harus menyediakannya."""
+    with TestClient(app) as client:
+        resp = client.get("/learning/progress")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "progress" in body, "frontend baca key progress"
+        assert "documents" in body, "konsumen lama masih pakai key documents"
+        assert isinstance(body["progress"], list)
+
+
+def test_learning_mindmap_endpoint() -> None:
+    """Peta konsep dokumen (glossaryService.getMindmap)."""
+    with TestClient(app) as client:
+        _upload_wait(
+            client,
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        resp = client.get("/learning/mindmap", params={"source": "sample_api.pdf"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["mindmap"]["name"] == "sample_api.pdf"
+
+
+def test_frontend_api_surface() -> None:
+    """Kontrak: tiap endpoint yang dipanggil frontend harus ada & method-nya
+    benar — tidak boleh 404 (path salah) / 405 (method salah) / 500."""
+    with TestClient(app) as client:
+        _upload_wait(
+            client,
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        _use_mock_llm(client)  # LLM mock untuk endpoint yang memanggil AI
+
+        calls = [
+            ("GET", "/health", None),
+            ("GET", "/metrics", None),
+            ("GET", "/documents", None),
+            ("GET", "/categories", None),
+            ("GET", "/sessions/list", None),
+            ("POST", "/sessions/create", {"json": {"title": "kontrak"}}),
+            ("GET", "/learning/due", None),
+            ("GET", "/learning/cards", None),
+            ("GET", "/learning/flashcards", None),
+            ("GET", "/learning/flashcards/stats", None),
+            ("GET", "/learning/weak-spots", None),
+            ("GET", "/learning/mastery", None),
+            ("GET", "/learning/progress", None),
+            ("GET", "/learning/recommendations", None),
+            ("GET", "/learning/quiz/history", None),
+            ("GET", "/learning/mindmap", None),
+            ("GET", "/learning/summary", {"params": {"source": "sample_api.pdf"}}),
+            ("GET", "/glossary", None),
+            ("GET", "/glossary/candidates", None),
+            ("GET", "/annotations", None),
+            ("GET", "/privacy/info", None),
+            ("GET", "/repeated-questions", None),
+            ("GET", "/locations", {"params": {"q": "VLAN"}}),
+            ("GET", "/documents/sample_api.pdf/chunks", None),
+            ("GET", "/audit", None),
+            ("GET", "/deleted-documents", None),
+        ]
+        for method, path, kw in calls:
+            resp = client.request(method, path, **(kw or {}))
+            assert resp.status_code not in (404, 405, 500), (
+                f"{method} {path} -> {resp.status_code} {resp.text[:200]}"
+            )
 
 
 def test_document_chunks_endpoint() -> None:
@@ -325,6 +409,103 @@ def test_quiz_generate_up_to_20() -> None:
             body = resp.json()
             assert body["attempt_id"]
             assert all("answer_index" not in q for q in body["questions"])
+
+
+def test_quiz_grade_returns_explanations() -> None:
+    """Koreksi kuis mengembalikan pembahasan per soal (LLM batch, opsional).
+
+    Skor tetap deterministik; pembahasan tidak memengaruhi skor.
+    """
+    with TestClient(app) as client:
+        _upload_wait(
+            client,
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        llm = _use_mock_llm(client)
+        llm.text = json.dumps([
+            {
+                "question": "Apa fungsi VLAN?",
+                "options": ["Partisi broadcast", "Enkripsi data", "Routing dinamis", "NAT"],
+                "answer_index": 0,
+            },
+            {
+                "question": "Apa itu OSPF?",
+                "options": ["Distance vector", "Link-state routing", "Path vector", "Proprietary"],
+                "answer_index": 1,
+            },
+        ])
+        resp = client.post(
+            "/learning/quiz/generate", json={"n": 2, "source": "sample_api.pdf"}
+        )
+        assert resp.status_code == 200, resp.text
+        attempt_id = resp.json()["attempt_id"]
+
+        # Tahap koreksi: LLM menghasilkan pembahasan
+        llm.text = json.dumps(["VLAN memisahkan domain broadcast.", "OSPF adalah protokol link-state."])
+        resp = client.post(
+            "/learning/quiz/grade",
+            json={"attempt_id": attempt_id, "answers": [0, 1]},
+        )
+        assert resp.status_code == 200, resp.text
+        details = resp.json()["details"]
+        assert len(details) == 2
+        assert all(d.get("explanation") for d in details), "pembahasan harus ada"
+        assert resp.json()["score"] == 2
+
+        # LLM gagal / respons tak valid -> tetap 200 tanpa pembahasan
+        llm.text = "bukan json"
+        resp = client.post(
+            "/learning/quiz/grade",
+            json={"attempt_id": attempt_id, "answers": [0, 1]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert all("explanation" not in d for d in resp.json()["details"])
+
+
+def test_quiz_attempt_detail_endpoint() -> None:
+    """Riwayat kuis: detail attempt berisi soal + kunci jawaban + skor."""
+    with TestClient(app) as client:
+        _upload_wait(
+            client,
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        llm = _use_mock_llm(client)
+        llm.text = json.dumps([
+            {
+                "question": "Apa fungsi VLAN?",
+                "options": ["Partisi broadcast", "Enkripsi", "Routing", "NAT"],
+                "answer_index": 0,
+            },
+        ])
+        resp = client.post(
+            "/learning/quiz/generate", json={"n": 1, "source": "sample_api.pdf"}
+        )
+        assert resp.status_code == 200, resp.text
+        attempt_id = resp.json()["attempt_id"]
+
+        # Belum dikerjakan: detail ada, skor kosong
+        detail = client.get(f"/learning/quiz/attempts/{attempt_id}").json()
+        assert detail["status"] == "ok"
+        assert len(detail["questions"]) == 1
+        assert detail["questions"][0]["correct_index"] == 0
+        assert detail["score"] is None
+
+        # Setelah dikoreksi: riwayat mencatat attempt_id & detail punya skor
+        llm.text = "[" + json.dumps("Pembahasan VLAN.") + "]"
+        client.post(
+            "/learning/quiz/grade",
+            json={"attempt_id": attempt_id, "answers": [0]},
+        )
+        hist = client.get("/learning/quiz/history").json()["history"]
+        assert any(h.get("attempt_id") == attempt_id for h in hist), (
+            "riwayat harus menautkan attempt_id"
+        )
+        detail = client.get(f"/learning/quiz/attempts/{attempt_id}").json()
+        assert detail["score"] == 1
+        assert detail["total"] == 1
+
+        # Attempt tidak dikenal -> 404
+        assert client.get("/learning/quiz/attempts/tidak-ada").status_code == 404
 
 
 def test_annotations_crud() -> None:
@@ -517,6 +698,71 @@ def test_cors_header() -> None:
         assert resp.headers.get("access-control-allow-origin") is None
 
 
+def test_custom_flashcards_and_deck_endpoints() -> None:
+    """Test custom flashcard creation, list, and deletion."""
+    with TestClient(app) as client:
+        # Create custom card
+        r1 = client.post(
+            "/learning/flashcards/custom",
+            json={"question": "Apa itu DNS?", "answer": "Domain Name System", "source": "test.pdf"},
+        )
+        assert r1.status_code == 200
+        card_id = r1.json()["card"]["card_id"]
+        assert card_id
+
+        # List cards
+        r2 = client.get("/learning/cards")
+        assert r2.status_code == 200
+        cards = r2.json()["cards"]
+        assert any(c["card_id"] == card_id for c in cards)
+
+        # Answer with rating 4
+        r3 = client.post(
+            "/learning/answer",
+            json={"card_id": card_id, "rating": 4},
+        )
+        assert r3.status_code == 200
+        assert r3.json()["card"]["interval_days"] >= 2
+
+        # Delete card
+        r4 = client.delete(f"/learning/flashcards/{card_id}")
+        assert r4.status_code == 200
+
+
+def test_learning_recommendations_endpoint() -> None:
+    """Test learning recommendations endpoint."""
+    with TestClient(app) as client:
+        r = client.get("/learning/recommendations")
+        assert r.status_code == 200
+        assert "recommendations" in r.json()
+        assert "card_stats" in r.json()
+
+
+def test_toggle_verify_glossary_endpoint() -> None:
+    """Test 1-click toggle verify glossary term."""
+    with TestClient(app) as client:
+        # Create term as draft
+        r1 = client.post(
+            "/glossary",
+            json={"term": "BGP_TEST", "definition": "Border Gateway Protocol", "verified": False},
+        )
+        assert r1.status_code == 201
+        term_id = r1.json()["term"]["id"]
+
+        # Toggle to verified
+        r2 = client.put(f"/glossary/{term_id}/verify")
+        assert r2.status_code == 200
+        assert r2.json()["term"]["verified"] is True
+
+        # Toggle back to draft
+        r3 = client.put(f"/glossary/{term_id}/verify")
+        assert r3.status_code == 200
+        assert r3.json()["term"]["verified"] is False
+
+        # Cleanup
+        client.delete(f"/glossary/{term_id}")
+
+
 def main() -> None:
     test_health()
     test_full_flow()
@@ -540,6 +786,9 @@ def main() -> None:
     test_flashcards_answer_endpoint()
     test_quiz_generate_up_to_20()
     test_annotations_crud()
+    test_custom_flashcards_and_deck_endpoints()
+    test_learning_recommendations_endpoint()
+    test_toggle_verify_glossary_endpoint()
     print("\nSemua test Sprint 4+session (API) PASS ✔")
 
 

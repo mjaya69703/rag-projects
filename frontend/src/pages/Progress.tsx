@@ -1,243 +1,342 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { api, type ProgressDoc, type QuizHistoryItem, type ReviewCard, type WeakSpot } from '../api'
-import { Icon } from '../components/Icon'
-import { usePageHeader } from '../components/PageHeader'
-import { useToast } from '../components/Toast'
+import React, { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Icon,
+  PageHeader,
+  Spinner,
+  StatCard,
+} from '../shared/components'
+import { useToast } from '../shared/hooks'
+import { learningService, systemService } from '../shared/services'
+import type { CardStats, DocumentProgress, MasteryStat, RecommendationItem, RepeatedQuestionItem, SystemMetrics, WeakSpot } from '../shared/types'
 
-/** Halaman /progress — Analytics Dashboard & Tracking Pembelajaran. */
+function formatStorage(mb: number | undefined): string {
+  if (!mb) return '0 MB'
+  if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB'
+  return mb.toFixed(0) + ' MB'
+}
+
 export default function Progress() {
-  const toast = useToast()
-  const [docs, setDocs] = useState<ProgressDoc[]>([])
-  const [weak, setWeak] = useState<WeakSpot[]>([])
-  const [due, setDue] = useState<ReviewCard[]>([])
-  const [history, setHistory] = useState<QuizHistoryItem[]>([])
-  const [ready, setReady] = useState(false)
-
-  usePageHeader({ eyebrow: 'TRACKING & ANALYTICS', title: 'Progress Pembelajaran' })
+  const navigate = useNavigate()
+  const { addToast } = useToast()
+  const [weakSpots, setWeakSpots] = useState<WeakSpot[]>([])
+  const [mastery, setMastery] = useState<MasteryStat[]>([])
+  const [progress, setProgress] = useState<DocumentProgress[]>([])
+  const [metrics, setMetrics] = useState<SystemMetrics>({})
+  const [cardStats, setCardStats] = useState<CardStats>({ total: 0, due_today: 0, avg_lapses: 0 })
+  const [recommendations, setRecommendations] = useState<RecommendationItem[]>([])
+  const [repeatedQuestions, setRepeatedQuestions] = useState<RepeatedQuestionItem[]>([])
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [p, w, d, h] = await Promise.all([
-          api<{ documents: ProgressDoc[] }>('/learning/progress'),
-          api<{ weak_spots: WeakSpot[] }>('/learning/weak-spots'),
-          api<{ cards: ReviewCard[] }>('/learning/due'),
-          api<{ history: QuizHistoryItem[] }>('/learning/quiz/history'),
-        ])
-        setDocs(p.documents)
-        setWeak(w.weak_spots)
-        setDue(d.cards)
-        setHistory(h.history || [])
-      } catch (error) {
-        toast(error instanceof Error ? error.message : 'Gagal memuat data progress.')
-      } finally {
-        setReady(true)
-      }
-    })()
-  }, [toast])
+    loadData()
+  }, [])
 
-  const totalQuestionsAsked = docs.reduce((acc, d) => acc + d.total_questions, 0)
+  const loadData = async () => {
+    setLoading(true)
+    try {
+      const [weakRes, masteryRes, progRes, metricsRes, repRes, recRes] = await Promise.all([
+        learningService.getWeakSpots(8),
+        learningService.getMastery(),
+        learningService.getProgress(),
+        systemService.getMetrics(),
+        systemService.getRepeatedQuestions(7, 2),
+        learningService.getRecommendations().catch(() => ({ recommendations: [], card_stats: { total: 0, due_today: 0, avg_lapses: 0 } })),
+      ])
+      setWeakSpots(weakRes.weak_spots || [])
+      setMastery(masteryRes.mastery || [])
+      setProgress(progRes.progress || [])
+      setMetrics(metricsRes || {})
+      setRepeatedQuestions(repRes.questions || [])
+      setRecommendations((recRes as any).recommendations || [])
+      setCardStats((recRes as any).card_stats || { total: 0, due_today: 0, avg_lapses: 0 })
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat analitik.', 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleExportReport = () => {
+    const reportData = {
+      timestamp: new Date().toISOString(),
+      summary: {
+        total_rag_queries: metrics.queries || 0,
+        cache_hits: metrics.cache_hits || 0,
+        cache_misses: metrics.cache_misses || 0,
+        due_flashcards: cardStats.due_today,
+        total_flashcards: cardStats.total,
+      },
+      weak_spots: weakSpots,
+      mastery: mastery,
+      progress: progress,
+    }
+    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `learning_report_${new Date().toISOString().substring(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    addToast('Laporan perkembangan belajar berhasil diunduh!', 'success')
+  }
 
   return (
-    <div className="page-content">
-      {/* Top Stat KPI Banner */}
-      <div className="stat-banner">
-        <div className="stat-card">
-          <div className="stat-icon-wrapper">
-            <Icon name="i-chat" />
+    <div className="page-container" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      <PageHeader
+        title="Learning Analytics & Diagnostics"
+        subtitle="Pusat komando belajar: pantau daya serap materi, rekomendasi AI personal, dan perbaiki titik lemah secara instan."
+        actions={
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <Button variant="secondary" icon="download" onClick={handleExportReport}>
+              Unduh Rapor Belajar
+            </Button>
+            <Button variant="secondary" icon="refresh" onClick={loadData}>
+              Muat Ulang
+            </Button>
           </div>
-          <div className="stat-info">
-            <span className="stat-value">{totalQuestionsAsked}</span>
-            <span className="stat-label">Total Pertanyaan Diajukan</span>
+        }
+      />
+
+      {/* Action Center Bar - Quick Jump */}
+      <Card padding="md" style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(12px)', border: '1px solid var(--glass-border)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <span style={{ fontSize: '0.78rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--accent)', letterSpacing: '0.05em' }}>
+              ⚡ Aksi Cepat Belajar
+            </span>
+            <h4 style={{ fontSize: '1rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.2rem' }}>
+              Mau fokus belajar apa hari ini?
+            </h4>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.65rem', flexWrap: 'wrap' }}>
+            <Button
+              variant="primary"
+              icon="clock"
+              onClick={() => navigate('/flashcards')}
+            >
+              Uji Harian SM-2 ({cardStats.due_today} Due)
+            </Button>
+
+            <Button
+              variant="secondary"
+              icon="quiz"
+              onClick={() => navigate('/quiz')}
+            >
+              Buat Kuis AI
+            </Button>
+
+            <Button
+              variant="secondary"
+              icon="chat"
+              onClick={() => navigate('/')}
+            >
+              Tanya di Chat
+            </Button>
           </div>
         </div>
+      </Card>
 
-        <div className="stat-card">
-          <div className="stat-icon-wrapper">
-            <Icon name="i-file" />
+      {loading ? (
+        <Card style={{ padding: '4rem', display: 'flex', justifyContent: 'center' }}>
+          <Spinner size="lg" text="Menganalisis perkembangan belajar..." />
+        </Card>
+      ) : (
+        <>
+          {/* Top KPI Metrics */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+            <StatCard
+              title="Total Pertanyaan RAG"
+              value={metrics.queries || 0}
+              icon="zap"
+              subtitle={`Cache: ${metrics.cache_hits || 0} hit • ${metrics.cache_misses || 0} miss`}
+            />
+            <StatCard
+              title="Kartu Due Review"
+              value={cardStats.due_today}
+              icon="clock"
+              subtitle={`Dari total ${cardStats.total} kartu aktif`}
+            />
+            <StatCard
+              title="Latency P50"
+              value={`${metrics.latency_ms_p50 || 0} ms`}
+              icon="clock"
+              subtitle={`P95: ${metrics.latency_ms_p95 || 0} ms`}
+            />
+            <StatCard
+              title="Kapasitas Disk Free"
+              value={formatStorage(metrics.disk?.persist_free_mb)}
+              icon="library"
+              subtitle={`Dari total ${formatStorage(metrics.disk?.persist_total_mb)}`}
+            />
           </div>
-          <div className="stat-info">
-            <span className="stat-value">{docs.length}</span>
-            <span className="stat-label">Dokumen Dipelajari</span>
-          </div>
-        </div>
 
-        <div className="stat-card">
-          <div className="stat-icon-wrapper">
-            <Icon name="i-bulb" />
-          </div>
-          <div className="stat-info">
-            <span className="stat-value">{weak.length}</span>
-            <span className="stat-label">Area Perlu Diperbaiki</span>
-          </div>
-        </div>
+          {/* AI Study Recommendations */}
+          {recommendations.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.85rem' }}>
+                <Icon name="sparkles" size={18} />
+                <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  💡 Rekomendasi Belajar Personal dari AI
+                </h3>
+              </div>
 
-        <div className="stat-card">
-          <div className="stat-icon-wrapper">
-            <Icon name="i-card" />
-          </div>
-          <div className="stat-info">
-            <span className="stat-value">{due.length}</span>
-            <span className="stat-label">Kartu Review Due Today</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Grid Layout Analytics */}
-      <div className="library-grid">
-        {/* Coverage Per Dokumen */}
-        <section className="library-card library-docs" aria-labelledby="prog-docs-label">
-          <div className="section-label-row">
-            <h2 id="prog-docs-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Icon name="i-chart" /> Cakupan Materi Per Dokumen
-            </h2>
-            <span className="badge">{docs.length} dokumen</span>
-          </div>
-          {!ready ? (
-            <p className="empty-list">Memuat…</p>
-          ) : docs.length === 0 ? (
-            <p className="empty-list">Belum ada data aktivitas pembelajaran.</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-              {docs.map((doc) => {
-                const subHeadings = doc.headings_covered.length
-                return (
-                  <div className="progress-doc" key={doc.source} style={{ padding: 'var(--space-4)', borderRadius: 'var(--radius-md)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
-                      <strong style={{ fontSize: 'var(--text-sm)', wordBreak: 'break-all' }}>{doc.source}</strong>
-                      <span className="badge" style={{ fontSize: '0.68rem' }}>{doc.total_questions} Q</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+                {recommendations.map((rec, idx) => (
+                  <Card key={idx} padding="md" style={{ borderLeft: `4px solid ${rec.priority === 'high' ? 'var(--error)' : 'var(--accent)'}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+                      <span style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                        {rec.title}
+                      </span>
+                      <Badge variant={rec.priority === 'high' ? 'error' : 'secondary'} size="sm">
+                        {rec.priority === 'high' ? 'Penting' : 'Saran'}
+                      </Badge>
                     </div>
 
-                    <div style={{ marginBottom: 'var(--space-2)' }}>
-                      <small style={{ color: 'var(--color-muted)' }}>
-                        Sub-bab dibahas: {subHeadings} topik
-                      </small>
-                    </div>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5', marginBottom: '0.85rem' }}>
+                      {rec.description}
+                    </p>
 
-                    <ul className="progress-headings" style={{ listStyle: 'none', paddingLeft: 0 }}>
-                      {doc.headings_covered.length === 0 && (
-                        <li className="empty-list">Belum ada bab spesifik yang dibahas.</li>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      {rec.type === 'flashcards' ? (
+                        <Button variant="primary" size="sm" icon="cards" onClick={() => navigate('/flashcards')}>
+                          Latih Kartu Sekarang
+                        </Button>
+                      ) : rec.type === 'weak_spot' ? (
+                        <Button variant="secondary" size="sm" icon="quiz" onClick={() => navigate('/quiz')}>
+                          Latih Kuis Topik Ini
+                        </Button>
+                      ) : (
+                        <Button variant="secondary" size="sm" icon="quiz" onClick={() => navigate('/quiz')}>
+                          Mulai Kuis Baru
+                        </Button>
                       )}
-                      {doc.headings_covered.map((h) => (
-                        <li
-                          key={h.heading}
-                          style={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            padding: '0.2rem 0',
-                            borderBottom: '1px dashed var(--color-rule-light)',
-                          }}
-                        >
-                          <span>• {h.heading}</span>
-                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--color-accent)' }}>
-                            {h.asked}×
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </section>
-
-        {/* Matrix Area Lemah */}
-        <section className="library-card" aria-labelledby="prog-weak-label">
-          <div className="section-label-row">
-            <h2 id="prog-weak-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Icon name="i-alert" /> Area Lemah (Perlu Review)
-            </h2>
-            <span className="badge">{weak.length}</span>
-          </div>
-          {!ready ? (
-            <p className="empty-list">Memuat…</p>
-          ) : weak.length === 0 ? (
-            <p className="empty-list">Belum ada topik lemah yang terdeteksi.</p>
-          ) : (
-            <div className="repeated-list">
-              {weak.map((spot) => (
-                <div className="repeated-item" key={spot.topic} style={{ padding: '0.55rem 0.75rem' }}>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.1rem', flex: 1, minWidth: 0 }}>
-                    <span className="repeated-question" title={spot.topic} style={{ fontWeight: 600 }}>
-                      {spot.topic}
-                    </span>
-                    <small style={{ color: 'var(--color-error)' }}>Tingkat Kesulitan: Skor {spot.score}</small>
-                  </div>
-                  <Link
-                    to="/quiz"
-                    className="button button-secondary"
-                    style={{ minHeight: '28px', padding: '0 0.5rem', fontSize: '0.7rem' }}
-                  >
-                    Latih
-                  </Link>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* Kartu Review Due */}
-        <section className="library-card" aria-labelledby="prog-due-label">
-          <div className="section-label-row">
-            <h2 id="prog-due-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Icon name="i-refresh" /> Antrean Kartu Review
-            </h2>
-            <span className="badge">{due.length} due</span>
-          </div>
-          {!ready ? (
-            <p className="empty-list">Memuat…</p>
-          ) : due.length === 0 ? (
-            <p className="empty-list">Tidak ada kartu yang perlu di-review hari ini.</p>
-          ) : (
-            <div className="repeated-list">
-              {due.map((card) => (
-                <div className="repeated-item" key={card.card_id}>
-                  <span className="repeated-question" title={card.question}>
-                    {card.question}
-                  </span>
-                  <small>{card.lapses > 0 ? `${card.lapses}× lupa` : `Interval: ${card.interval_days}h`}</small>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* Riwayat Quiz Timeline */}
-        <section className="library-card" aria-labelledby="prog-quiz-label">
-          <div className="section-label-row">
-            <h2 id="prog-quiz-label" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Icon name="i-history" /> Riwayat Skor Quiz
-            </h2>
-            <span className="badge">{history.length}</span>
-          </div>
-          {!ready ? (
-            <p className="empty-list">Memuat…</p>
-          ) : history.length === 0 ? (
-            <p className="empty-list">Belum ada riwayat pengerjaan quiz.</p>
-          ) : (
-            <div className="repeated-list">
-              {history.slice(0, 10).map((item, i) => {
-                const pct = Math.round((item.score / item.total) * 100)
-                return (
-                  <div className="repeated-item" key={i}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                      <span className={`badge ${pct >= 70 ? 'badge-priority-medium' : 'badge-priority-high'}`} style={{ fontSize: '0.65rem' }}>
-                        {pct}%
-                      </span>
-                      <span className="repeated-question">
-                        {item.source ? `${item.source}` : 'Semua Dokumen'} ({item.score}/{item.total})
-                      </span>
                     </div>
-                    <small>{(item.created_at || '').slice(0, 10)}</small>
-                  </div>
-                )
-              })}
+                  </Card>
+                ))}
+              </div>
             </div>
           )}
-        </section>
-      </div>
+
+          {/* Diagnostics Section */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '1.5rem' }}>
+            {/* Weak Spots Diagnostic */}
+            <Card padding="lg">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  Area Perlu Pengulangan (Weak-spots)
+                </h3>
+                <Badge variant="error">Perlu Review</Badge>
+              </div>
+
+              {weakSpots.length === 0 ? (
+                <EmptyState
+                  icon="award"
+                  title="Tidak Ada Titik Lemah Signifikan"
+                  description="Bagus! Anda menjawab sebagian besar kuis dan flashcard dengan benar."
+                />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {weakSpots.map((ws, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        padding: '1rem 1.25rem',
+                        background: 'var(--bg-surface-raised)',
+                        borderRadius: 'var(--radius-md)',
+                        borderLeft: '4px solid var(--error)',
+                        boxShadow: 'var(--shadow-sm)',
+                        flexWrap: 'wrap',
+                        gap: '0.75rem',
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: '200px' }}>
+                        <div style={{ fontWeight: '700', fontSize: '0.92rem', color: 'var(--text-primary)' }}>{ws.topic}</div>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                          Ditanya: {ws.asked}x • Lupa: {ws.lapses}x • Salah: {ws.wrong}x
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Badge variant="warning">Skor {ws.score}</Badge>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          icon="quiz"
+                          onClick={() => navigate('/quiz')}
+                          title="Latih remedial"
+                        >
+                          Latih Kuis
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            {/* Document Mastery Progress */}
+            <Card padding="lg">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  Tingkat Penguasaan Dokumen (Mastery)
+                </h3>
+                <Badge variant="success">SM-2 Correctness</Badge>
+              </div>
+
+              {mastery.length === 0 ? (
+                <EmptyState
+                  icon="library"
+                  title="Belum Ada Data Penguasaan"
+                  description="Kerjakan kuis atau flashcard untuk mengukur tingkat pemahaman tiap dokumen."
+                />
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                  {mastery.map((m, idx) => {
+                    const pct = Math.round((m.mastery || 0) * 100)
+                    return (
+                      <div key={idx}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', fontSize: '0.85rem' }}>
+                          <span style={{ fontWeight: '600', color: 'var(--text-primary)' }}>{m.source}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                              {m.correct} benar / {m.exposure} diuji
+                            </span>
+                            <span style={{ fontWeight: '700', color: pct >= 80 ? 'var(--success)' : pct >= 50 ? 'var(--warning)' : 'var(--error)' }}>
+                              {pct}%
+                            </span>
+                          </div>
+                        </div>
+
+                        <div style={{ width: '100%', height: '8px', background: 'var(--border-subtle)', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div
+                            style={{
+                              width: `${pct}%`,
+                              height: '100%',
+                              background: pct >= 80 ? 'var(--success)' : pct >= 50 ? 'var(--warning)' : 'var(--error)',
+                              transition: 'width 0.6s ease-in-out',
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </Card>
+          </div>
+        </>
+      )}
     </div>
   )
 }

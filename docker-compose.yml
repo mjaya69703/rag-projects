@@ -1,22 +1,26 @@
+version: "3.8"
+
 services:
-  rag-app:
+  knowledge-base:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: rag-knowledge-base
+    container_name: cortex_knowledge_base
     restart: unless-stopped
     ports:
       - "8000:8000"
-    # Wajib: salin .env.example ke .env lalu isi LLM_API_KEY/LLM_API_BASE/LLM_MODEL.
-    env_file:
-      - .env
     environment:
-      - HOST=0.0.0.0
-      - PORT=8000
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LLM_MODEL=${LLM_MODEL}
       - PERSIST_DIR=/app/data/chroma_db
       - UPLOAD_DIR=/app/uploads
       - DB_PATH=/app/data/chat.db
-      - RAG_MIN_SIMILARITY=0.6
+      - REDACTION_ENABLED=${REDACTION_ENABLED:-true}
+      - RETAIN_CHAT_DAYS=${RETAIN_CHAT_DAYS:-30}
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
@@ -25,4 +29,3 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s

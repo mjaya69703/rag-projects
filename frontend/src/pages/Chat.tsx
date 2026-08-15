@@ -1,416 +1,406 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { Link } from 'react-router-dom'
-import { api, type Message, type SourceRef } from '../api'
+import React, { useEffect, useRef, useState } from 'react'
 import { useSessions } from '../context/SessionsContext'
-import { Icon } from '../components/Icon'
-import { Markdown } from '../components/Markdown'
-import { usePageHeader } from '../components/PageHeader'
-import { SourceAccordion, useAnnotationLoader } from '../components/SourceCard'
-import { useToast } from '../components/Toast'
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Icon,
+  Modal,
+  PromptDialog,
+  SourceCard,
+  Spinner,
+  Markdown,
+} from '../shared/components'
+import { useToast } from '../shared/hooks'
+import { chatService, documentService } from '../shared/services'
+import type { DocumentInfo, Message, SourceRef } from '../shared/types'
 
-interface StreamEvent {
-  type: 'meta' | 'delta' | 'done' | 'error'
-  text?: string
-  answer?: string
-  sources?: SourceRef[]
-  cached?: boolean
-  grounded?: boolean
-  document_missing?: boolean
-  session?: unknown
-  detail?: string
-}
-
-function MessageItem({
-  message,
-  annotations,
-  onAnnotated,
-  cached,
-  grounded,
-  documentMissing,
-}: {
-  message: Message
-  annotations: Record<string, string>
-  onAnnotated: () => void
-  cached?: boolean
-  grounded?: boolean
-  documentMissing?: boolean
-}) {
-  const isUser = message.role === 'user'
-  const showGrounding = !isUser && (documentMissing || grounded === false)
-  return (
-    <article className={`message ${isUser ? 'user' : 'assistant'}`}>
-      <div className="message-avatar">
-        {isUser ? (
-          'YOU'
-        ) : (
-          <svg className="icon" aria-hidden="true">
-            <use href="#i-mark" />
-          </svg>
-        )}
-      </div>
-      <div className="message-content">
-        <div className="message-meta">{isUser ? 'PERTANYAAN' : 'JAWABAN'}</div>
-        {isUser ? (
-          <div className="message-text">{message.content}</div>
-        ) : (
-          <>
-            <div className={`message-text${showGrounding ? ' grounded-note' : ''}`}>
-              {message.content ? (
-                <Markdown content={message.content} />
-              ) : (
-                <div className="typing-dots" title="Sedang berpikir...">
-                  <span />
-                  <span />
-                  <span />
-                </div>
-              )}
-            </div>
-            {showGrounding && !documentMissing && (
-              <p className="grounded-notice">
-                <Icon name="i-alert" /> Tidak ada materi yang cukup relevan — jawaban di atas bukan dari dokumen.
-              </p>
-            )}
-            {cached && (
-              <span className="cache-note">
-                <svg className="icon" aria-hidden="true">
-                  <use href="#i-zap" />
-                </svg>{' '}
-                dari semantic cache
-              </span>
-            )}
-            {!!message.sources?.length && (
-              <SourceAccordion sources={message.sources} annotations={annotations} onAnnotated={onAnnotated} />
-            )}
-          </>
-        )}
-      </div>
-    </article>
-  )
-}
-
-/** Halaman utama: chat (streaming) — sidebar & topbar di AppLayout. */
 export default function Chat() {
-  const toast = useToast()
-  const { annotations, loadAnnotations } = useAnnotationLoader()
+  const { addToast } = useToast()
   const {
     sessions,
     activeId,
     activeSession,
     messages,
-    documents,
-    streaming,
-    selectSession,
-    createSession,
+    sendMessage,
+    streamMessage,
     renameSession,
     deleteSession,
-    setMessages,
-    setStreaming,
-    refreshAll,
+    selectSession,
+    createSession,
   } = useSessions()
 
-  const [question, setQuestion] = useState('')
-  const [sourceFilter, setSourceFilter] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState('')
-  const [categories, setCategories] = useState<CategoryInfo[]>([])
-  const [mode, setMode] = useState('sliding')
-  const [topK, setTopK] = useState(5)
-  const [emptyHidden, setEmptyHidden] = useState(false)
+  const [input, setInput] = useState('')
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [documents, setDocuments] = useState<DocumentInfo[]>([])
+  const [selectedDoc, setSelectedDoc] = useState<string>('')
+  const [chatMode, setChatMode] = useState<'sliding' | 'summary'>('sliding')
 
-  const chatRegionRef = useRef<HTMLElement>(null)
-  const questionRef = useRef<HTMLTextAreaElement>(null)
-  const abortRef = useRef<AbortController | null>(null)
-  const lastAnswerRef = useRef({ cached: false, grounded: true, documentMissing: false })
+  // Modals
+  const [isRenameOpen, setIsRenameOpen] = useState(false)
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false)
 
-  // Topbar: judul session + aksi rename/delete
-  usePageHeader({
-    eyebrow: 'RAG WORKSPACE',
-    title: activeSession?.title || 'Chat baru',
-    actions: (
-      <>
-        <button className="icon-button" type="button" aria-label="Ubah nama chat" title="Ubah nama" onClick={() => void renameSession()}>
-          <svg className="icon" aria-hidden="true"><use href="#i-edit" /></svg>
-        </button>
-        <button className="icon-button danger" type="button" aria-label="Hapus chat" title="Hapus chat" onClick={() => void deleteSession()}>
-          <svg className="icon" aria-hidden="true"><use href="#i-trash" /></svg>
-        </button>
-      </>
-    ),
-  })
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    if (activeId) void selectSession(activeId)
-    void loadAnnotations()
-    void api<{ categories: CategoryInfo[] }>('/categories')
-      .then((res) => setCategories(res.categories || []))
-      .catch(() => setCategories([]))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId])
-
-  const scrollToBottom = useCallback(() => {
-    requestAnimationFrame(() => chatRegionRef.current?.scrollTo({ top: chatRegionRef.current.scrollHeight }))
+    loadDocuments()
   }, [])
 
-  async function askQuestion(raw?: string) {
-    const text = (raw ?? question).trim()
-    if (!text || streaming) return
-    if (!activeId) await createSession()
-    setEmptyHidden(true)
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, isStreaming])
 
-    setMessages((prev) => [...prev, { role: 'user', content: text }, { role: 'assistant', content: '' }])
-    setQuestion('')
-    setStreaming(true)
-
-    const controller = new AbortController()
-    abortRef.current = controller
-    let answer = ''
-    let sources: SourceRef[] = []
-    let cached = false
-    let grounded = true
-    let documentMissing = false
-
-    const updateAssistant = (patch: Partial<Message>) => {
-      setMessages((prev) => {
-        const next = [...prev]
-        const last = next[next.length - 1]
-        if (last) next[next.length - 1] = { ...last, ...patch }
-        return next
-      })
+  const loadDocuments = async () => {
+    try {
+      const res = await documentService.listDocuments()
+      setDocuments(res.documents || [])
+    } catch {
+      // ignore
     }
+  }
+
+  const handleSend = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    const text = input.trim()
+    if (!text || isStreaming) return
+
+    setInput('')
+    setIsStreaming(true)
 
     try {
-      const response = await fetch('/query/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: text,
-          top_k: topK,
-          source: sourceFilter || null,
-          category: categoryFilter || null,
-          session_id: activeId,
-          mode,
-        }),
-        signal: controller.signal,
-      })
-      if (!response.ok || !response.body) {
-        const body = await response.json().catch(() => ({}))
-        throw new Error((body as { detail?: string }).detail || `HTTP ${response.status}`)
-      }
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const records = buffer.split('\n\n')
-        buffer = records.pop() || ''
-
-        for (const record of records) {
-          const line = record.split('\n').find((l) => l.startsWith('data:'))
-          if (!line) continue
-          const event = JSON.parse(line.slice(5)) as StreamEvent
-
-          if (event.type === 'meta') {
-            sources = event.sources || []
-            cached = event.cached || false
-            grounded = event.grounded !== false
-            documentMissing = !!event.document_missing
-          } else if (event.type === 'delta') {
-            answer += event.text || ''
-            updateAssistant({ content: answer })
-            scrollToBottom()
-          } else if (event.type === 'done') {
-            answer = event.answer || answer
-            updateAssistant({ content: answer || '(Tidak ada jawaban)' })
-            if (activeId) await selectSession(activeId)
-          } else if (event.type === 'error') {
-            const err = new Error(event.detail || 'Gagal mendapatkan jawaban.')
-            ;(err as unknown as { isLLM?: boolean }).isLLM = true
-            throw err
-          }
-        }
-      }
-
-      updateAssistant({ content: answer, sources: sources.length ? sources : undefined })
-      lastAnswerRef.current = { cached, grounded, documentMissing }
-    } catch (error) {
-      if ((error as Error).name === 'AbortError') {
-        const text2 = answer.trim() ? `${answer}\n\n— Jawaban dihentikan.` : '(Jawaban dihentikan.)'
-        updateAssistant({ content: text2 })
+      if (streamMessage) {
+        await streamMessage(text, {
+          source: selectedDoc || undefined,
+          mode: chatMode,
+        })
       } else {
-        updateAssistant({ content: `Tidak dapat menjawab: ${(error as Error).message}`, sources: [] })
+        await sendMessage(text)
       }
+    } catch (err: any) {
+      addToast(err.message || 'Gagal mengirim pesan.', 'error')
     } finally {
-      abortRef.current = null
-      setStreaming(false)
-      void loadAnnotations()
-      void refreshAll()
-      setTimeout(() => questionRef.current?.focus(), 0)
+      setIsStreaming(false)
     }
   }
 
-  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      void askQuestion()
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
     }
   }
 
-  function autoGrow(event: FormEvent<HTMLTextAreaElement>) {
-    const el = event.currentTarget
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 176)}px`
+  const handleQuickPrompt = (promptText: string) => {
+    setInput(promptText)
+    textareaRef.current?.focus()
   }
-
-  const lastIndex = messages.length - 1
 
   return (
-    <>
-      <section className="chat-region" aria-live="polite" ref={chatRegionRef}>
-        <div className="empty-state" hidden={emptyHidden}>
-          <div className="empty-icon">
-            <svg className="icon" aria-hidden="true"><use href="#i-mark" /></svg>
+    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+      {/* Session Title Header Bar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingBottom: '1rem',
+          borderBottom: '1px solid var(--border-subtle)',
+          marginBottom: '1rem',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+            {activeSession ? activeSession.title : 'Chat Studio'}
+          </h2>
+          <Badge variant="primary" size="sm">
+            {chatMode === 'sliding' ? 'Sliding Context' : 'Memory Summary'}
+          </Badge>
+          {selectedDoc && (
+            <Badge variant="secondary" size="sm">
+              📄 {selectedDoc}
+            </Badge>
+          )}
+        </div>
+
+        {activeSession && (
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="edit"
+              onClick={() => setIsRenameOpen(true)}
+              title="Ubah judul percakapan"
+            >
+              Ubah Nama
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="trash"
+              onClick={() => setIsDeleteOpen(true)}
+              title="Hapus percakapan ini"
+            >
+              Hapus
+            </Button>
           </div>
-          <p className="eyebrow">RAG RETRIEVAL ENGINE</p>
-          <h2>Apa yang ingin Anda pelajari hari ini?</h2>
-          <p>Unggah materi dokumen lalu ajukan pertanyaan. Jawaban akan langsung merujuk ke sumber paragraf dan halamannya.</p>
-          
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', marginTop: 'var(--space-4)' }}>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-subtle)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
-              <Icon name="i-bulb" /> COBA PERTANYAAN CONTOH:
-            </span>
-            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 'var(--space-2)' }}>
-              {[
-                'Apa isi ringkasan dokumen ini?',
-                'Jelaskan poin-poin utama materi ini.',
-                'Apa saja istilah penting yang dibahas?',
-              ].map((qText) => (
-                <button
-                  key={qText}
-                  type="button"
-                  className="button button-secondary"
-                  style={{ minHeight: '34px', padding: '0 0.75rem', fontSize: 'var(--text-xs)', borderRadius: 'var(--radius-pill)', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
-                  onClick={() => {
-                    setQuestion(qText)
-                    questionRef.current?.focus()
+        )}
+      </div>
+
+      {/* Messages Stream Container */}
+      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '0.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        {messages.length === 0 ? (
+          <div style={{ margin: 'auto 0', padding: '2rem 0' }}>
+            <EmptyState
+              icon="brain"
+              title="Mulai Percakapan Baru dengan Cortex"
+              description="Tanyakan apa pun seputar dokumen yang telah Anda unggah. Cortex akan menjawab secara presisi dengan sitasi sumber."
+            />
+            {/* Quick Suggestion Chips */}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1.5rem' }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="sparkles"
+                onClick={() => handleQuickPrompt('Berikan ringkasan poin-poin penting dari seluruh materi yang terindeks.')}
+              >
+                Ringkas materi utama
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="quiz"
+                onClick={() => handleQuickPrompt('Buatkan 3 pertanyaan penting dari dokumen ini untuk menguji pemahaman saya.')}
+              >
+                Buatkan pertanyaan uji
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="glossary"
+                onClick={() => handleQuickPrompt('Jelaskan istilah-istilah teknis kunci beserta definisinya.')}
+              >
+                Daftar istilah teknis
+              </Button>
+            </div>
+          </div>
+        ) : (
+          messages.map((msg, idx) => {
+            const isUser = msg.role === 'user'
+            return (
+              <div
+                key={idx}
+                style={{
+                  display: 'flex',
+                  gap: '1rem',
+                  alignItems: 'flex-start',
+                  padding: '1.25rem',
+                  borderRadius: 'var(--radius-lg)',
+                  background: isUser ? 'var(--bg-surface-raised)' : 'var(--glass-bg)',
+                  border: `1px solid ${isUser ? 'var(--border-subtle)' : 'var(--glass-border)'}`,
+                }}
+              >
+                {/* Avatar Icon */}
+                <div
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: 'var(--radius-md)',
+                    background: isUser ? 'var(--bg-surface)' : 'linear-gradient(135deg, var(--accent) 0%, var(--cyan) 100%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#fff',
+                    flexShrink: 0,
+                    fontWeight: '700',
+                    fontSize: '0.8rem',
+                    boxShadow: isUser ? 'none' : '0 4px 14px var(--accent-glow)',
                   }}
                 >
-                  <Icon name="i-sparkles" /> {qText}
-                </button>
-              ))}
-            </div>
-          </div>
+                  {isUser ? 'YOU' : <Icon name="sparkles" size={18} />}
+                </div>
 
-          <div className="empty-actions" style={{ marginTop: 'var(--space-5)' }}>
-            <Link className="button button-primary" to="/library">
-              <svg className="icon" aria-hidden="true"><use href="#i-upload" /></svg> Kelola & Tambah Dokumen
-            </Link>
-          </div>
-        </div>
-        <div className="message-list">
-          {messages.map((message, i) => (
-            <MessageItem
-              key={i}
-              message={message}
-              annotations={annotations}
-              onAnnotated={() => void loadAnnotations()}
-              cached={i === lastIndex && lastAnswerRef.current.cached}
-              grounded={i === lastIndex ? lastAnswerRef.current.grounded : undefined}
-              documentMissing={i === lastIndex ? lastAnswerRef.current.documentMissing : undefined}
-            />
-          ))}
-        </div>
-      </section>
+                {/* Content */}
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                    <span style={{ fontWeight: '700', fontSize: '0.85rem', color: isUser ? 'var(--text-primary)' : 'var(--accent)' }}>
+                      {isUser ? 'Anda' : 'Cortex AI'}
+                    </span>
+                    {msg.created_at && (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        {msg.created_at.substring(11, 16)}
+                      </span>
+                    )}
+                  </div>
 
-      <section className="composer-area" aria-label="Tulis pertanyaan">
-        <div className="composer-container">
-          <div className="context-strip">
-            {categories.length > 0 && (
-              <div className="pill-group">
-                <label>
-                  Kategori:
-                  <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-                    <option value="">Semua kategori</option>
-                    {categories.map((cat) => (
-                      <option key={cat.category} value={cat.category}>
-                        {cat.category} ({cat.doc_count})
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  {isUser ? (
+                    <div
+                      style={{
+                        fontSize: '0.92rem',
+                        lineHeight: '1.65',
+                        color: 'var(--text-primary)',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        userSelect: 'text',
+                      }}
+                    >
+                      {msg.content}
+                    </div>
+                  ) : (
+                    <Markdown content={msg.content} />
+                  )}
+
+                  {/* Sources Accordion */}
+                  {msg.sources && msg.sources.length > 0 && (
+                    <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      <div style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+                        📚 Sumber Rujukan Terverifikasi ({msg.sources.length}):
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '0.5rem' }}>
+                        {msg.sources.map((s, sIdx) => (
+                          <SourceCard key={sIdx} source={s} index={sIdx} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
-            )}
-            <div className="pill-group">
-              <label>
-                Dokumen:
-                <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}>
-                  <option value="">Semua dokumen</option>
-                  {documents.map((doc) => (
-                    <option key={doc.source} value={doc.source}>
-                      {doc.source}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="pill-group">
-              <label>
-                Konteks:
-                <select value={mode} onChange={(e) => setMode(e.target.value)}>
-                  <option value="sliding">Sliding window</option>
-                  <option value="summary">Ringkasan + recent</option>
-                </select>
-              </label>
-            </div>
-            <div className="pill-group">
-              <label>
-                Top-k:
-                <select value={topK} onChange={(e) => setTopK(Number(e.target.value))}>
-                  {[3, 5, 8, 10, 15].map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            )
+          })
+        )}
+
+        {isStreaming && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '1rem', color: 'var(--accent)' }}>
+            <Spinner size="sm" />
+            <span style={{ fontSize: '0.85rem', fontWeight: '500' }}>Cortex sedang menganalisis dokumen dan merangkai jawaban...</span>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Floating Prompt Input Bar */}
+      <div
+        style={{
+          marginTop: '1rem',
+          background: 'var(--glass-bg)',
+          backdropFilter: 'var(--glass-blur)',
+          border: '1px solid var(--glass-border)',
+          borderRadius: 'var(--radius-xl)',
+          padding: '0.75rem 1rem',
+          boxShadow: 'var(--shadow-md)',
+        }}
+      >
+        {/* Controls Row */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <select
+              value={selectedDoc}
+              onChange={(e) => setSelectedDoc(e.target.value)}
+              style={{
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border-default)',
+                color: 'var(--text-secondary)',
+                fontSize: '0.78rem',
+                padding: '0.25rem 0.6rem',
+                borderRadius: 'var(--radius-sm)',
+              }}
+            >
+              <option value="">Semua Dokumen</option>
+              {documents.map((d) => (
+                <option key={d.source} value={d.source}>
+                  {d.source}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="button"
+              onClick={() => setChatMode(chatMode === 'sliding' ? 'summary' : 'sliding')}
+              style={{
+                background: 'var(--bg-surface)',
+                border: '1px solid var(--border-default)',
+                color: 'var(--text-secondary)',
+                fontSize: '0.78rem',
+                padding: '0.25rem 0.6rem',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+              }}
+            >
+              Mode: {chatMode === 'sliding' ? 'Sliding' : 'Summary'}
+            </button>
           </div>
 
-          <form
-            className="composer"
-            onSubmit={(e) => {
-              e.preventDefault()
-              void askQuestion()
-            }}
-          >
-            <textarea
-              ref={questionRef}
-              rows={1}
-              maxLength={2000}
-              placeholder="Tanya isi dokumenmu… (cth: Apa isi materi VLAN ini?)"
-              value={question}
-              disabled={streaming}
-              onChange={(e) => {
-                setQuestion(e.target.value)
-                autoGrow(e)
-              }}
-              onKeyDown={onComposerKeyDown}
-            />
-            <button className="stop-button" type="button" aria-label="Hentikan jawaban" hidden={!streaming} onClick={() => abortRef.current?.abort()}>
-              <svg className="icon" aria-hidden="true"><use href="#i-close" /></svg> Batal
-            </button>
-            <button className="send-button" type="submit" disabled={streaming}>
-              <span>{streaming ? 'Menjawab...' : 'Kirim'}</span>
-              <svg className="icon" aria-hidden="true"><use href="#i-send" /></svg>
-            </button>
-          </form>
-          <p className="composer-note">
-            Tekan <strong>Enter</strong> untuk kirim · <strong>Shift+Enter</strong> untuk baris baru
-          </p>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+            Tekan <kbd style={{ padding: '0.1rem 0.35rem', borderRadius: '4px', background: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}>Enter</kbd> untuk kirim, <kbd style={{ padding: '0.1rem 0.35rem', borderRadius: '4px', background: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}>Shift+Enter</kbd> untuk baris baru
+          </span>
         </div>
-      </section>
-    </>
+
+        {/* Input Textarea & Send Button */}
+        <form onSubmit={handleSend} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.75rem' }}>
+          <textarea
+            ref={textareaRef}
+            rows={2}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Tanyakan sesuatu tentang dokumen Anda..."
+            style={{
+              flex: 1,
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              resize: 'none',
+              color: 'var(--text-primary)',
+              fontSize: '0.92rem',
+              lineHeight: '1.5',
+            }}
+          />
+
+          <Button
+            type="submit"
+            variant="primary"
+            icon="send"
+            disabled={!input.trim() || isStreaming}
+          >
+            Kirim
+          </Button>
+        </form>
+      </div>
+
+      {/* Rename Dialog */}
+      <PromptDialog
+        isOpen={isRenameOpen}
+        title="Ubah Nama Percakapan"
+        defaultValue={activeSession?.title || ''}
+        placeholder="Judul baru percakapan..."
+        onConfirm={async (newTitle) => {
+          if (activeSession) {
+            await renameSession(activeSession.id, newTitle)
+            setIsRenameOpen(false)
+            addToast('Nama percakapan berhasil diperbarui!', 'success')
+          }
+        }}
+        onCancel={() => setIsRenameOpen(false)}
+      />
+
+      {/* Delete Dialog */}
+      <ConfirmDialog
+        isOpen={isDeleteOpen}
+        title="Hapus Percakapan?"
+        description="Percakapan ini beserta seluruh riwayat pesannya akan dihapus secara permanen."
+        confirmText="Hapus"
+        onConfirm={async () => {
+          if (activeSession) {
+            await deleteSession(activeSession.id)
+            setIsDeleteOpen(false)
+            addToast('Percakapan berhasil dihapus.', 'info')
+          }
+        }}
+        onCancel={() => setIsDeleteOpen(false)}
+      />
+    </div>
   )
 }

@@ -1,7 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
-import { api, type DocumentInfo, type Message, type Session } from '../api'
-import { ConfirmDialog } from '../components/ConfirmDialog'
-import { PromptDialog } from '../components/PromptDialog'
+import { chatService, documentService } from '../shared/services'
+import type { DocumentInfo, Message, Session } from '../shared/types'
+
+interface StreamOptions {
+  source?: string
+  mode?: 'sliding' | 'summary'
+}
 
 interface SessionsContextValue {
   sessions: Session[]
@@ -11,9 +15,11 @@ interface SessionsContextValue {
   documents: DocumentInfo[]
   streaming: boolean
   selectSession: (id: string) => Promise<void>
-  createSession: () => Promise<void>
-  renameSession: () => void
-  deleteSession: () => void
+  createSession: () => void
+  renameSession: (id: string, newTitle: string) => Promise<void>
+  deleteSession: (id: string) => Promise<void>
+  sendMessage: (text: string, options?: StreamOptions) => Promise<void>
+  streamMessage: (text: string, options?: StreamOptions) => Promise<void>
   loadSessions: () => Promise<void>
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
   setStreaming: (value: boolean) => void
@@ -37,83 +43,172 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   const streamingRef = useRef(false)
   streamingRef.current = streaming
 
-  // State untuk custom modal
-  const [renameOpen, setRenameOpen] = useState(false)
-  const [deleteOpen, setDeleteOpen] = useState(false)
-  const [modalLoading, setModalLoading] = useState(false)
-
   const activeSession = sessions.find((s) => s.id === activeId) || null
 
   const loadSessions = useCallback(async () => {
-    const data = await api<{ sessions: Session[] }>('/sessions/list')
-    setSessions(data.sessions)
-    setActiveId((current) =>
-      current && data.sessions.some((s) => s.id === current) ? current : data.sessions[0]?.id || null,
-    )
+    try {
+      const data = await chatService.listSessions()
+      setSessions(data.sessions || [])
+    } catch {
+      // ignore
+    }
   }, [])
 
   const selectSession = useCallback(async (id: string) => {
     if (!id || streamingRef.current) return
     setActiveId(id)
-    const data = await api<{ messages: Message[] }>(`/sessions/${encodeURIComponent(id)}/messages`)
-    setMessages(data.messages || [])
+    try {
+      const data = await chatService.getMessages(id)
+      setMessages(data.messages || [])
+    } catch {
+      setMessages([])
+    }
   }, [])
 
-  const createSession = useCallback(async () => {
-    const data = await api<{ session: Session }>('/sessions/create', { method: 'POST' })
-    setActiveId(data.session.id)
+  // LAZY SESSION CREATION: Cukup reset state lokal ke draft baru, TANPA memanggil API create session
+  const createSession = useCallback(() => {
+    if (streamingRef.current) return
+    setActiveId(null)
+    setMessages([])
+  }, [])
+
+  const renameSession = useCallback(async (id: string, newTitle: string) => {
+    if (!newTitle.trim() || !id) return
+    await chatService.renameSession(id, newTitle.trim())
     await loadSessions()
-    await selectSession(data.session.id)
-  }, [loadSessions, selectSession])
+  }, [loadSessions])
 
-  const renameSession = useCallback(() => {
-    if (!activeId || !activeSession) return
-    setRenameOpen(true)
-  }, [activeId, activeSession])
+  const deleteSession = useCallback(async (id: string) => {
+    if (!id) return
+    await chatService.deleteSession(id)
+    setActiveId(null)
+    setMessages([])
+    await loadSessions()
+  }, [loadSessions])
 
-  const handleConfirmRename = async (newTitle: string) => {
-    if (!newTitle.trim() || !activeId) return
-    setModalLoading(true)
+  const streamMessage = useCallback(async (text: string, options?: StreamOptions) => {
+    if (!text.trim() || streamingRef.current) return
+
+    let currentSessionId = activeId
+
+    // Jika ini chat baru (activeId == null), buat session SEKARANG (saat pesan pertama dikirim)
+    if (!currentSessionId) {
+      const title = text.length > 30 ? text.slice(0, 30) + '...' : text
+      const newSess = await chatService.createSession(title)
+      currentSessionId = newSess.session.id
+      setActiveId(currentSessionId)
+    }
+
+    // Tambahkan pesan user ke UI
+    const userMsg: Message = { role: 'user', content: text }
+    setMessages((prev) => [...prev, userMsg])
+    setStreaming(true)
+
+    // Siapkan placeholder response assistant
+    const assistantMsg: Message = { role: 'assistant', content: '' }
+    setMessages((prev) => [...prev, assistantMsg])
+
     try {
-      await api(`/sessions/${encodeURIComponent(activeId)}/rename`, {
-        method: 'PUT',
-        body: JSON.stringify({ title: newTitle.trim() }),
+      const token = localStorage.getItem('kb_api_token') || ''
+      const res = await fetch('/query/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          question: text,
+          session_id: currentSessionId,
+          source: options?.source || null,
+          mode: options?.mode || 'sliding',
+        }),
       })
-      await loadSessions()
-      setRenameOpen(false)
-    } finally {
-      setModalLoading(false)
-    }
-  }
 
-  const deleteSession = useCallback(() => {
-    if (!activeId || !activeSession) return
-    setDeleteOpen(true)
-  }, [activeId, activeSession])
-
-  const handleConfirmDelete = async () => {
-    if (!activeId) return
-    setModalLoading(true)
-    try {
-      await api(`/sessions/${encodeURIComponent(activeId)}`, { method: 'DELETE' })
-      setActiveId(null)
-      await loadSessions()
-      setDeleteOpen(false)
-      if (sessions.length > 1) {
-        const remaining = sessions.filter((s) => s.id !== activeId)
-        if (remaining[0]) await selectSession(remaining[0].id)
-      } else {
-        await createSession()
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP error ${res.status}`)
       }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let accumulatedText = ''
+      let sources: any[] = []
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value, { stream: true })
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.replace('data: ', '').trim()
+            try {
+              const parsed = JSON.parse(dataStr)
+              if (parsed.type === 'delta' && parsed.text) {
+                accumulatedText += parsed.text
+                setMessages((prev) => {
+                  const copy = [...prev]
+                  const lastIdx = copy.length - 1
+                  if (lastIdx >= 0 && copy[lastIdx].role === 'assistant') {
+                    copy[lastIdx] = { ...copy[lastIdx], content: accumulatedText }
+                  }
+                  return copy
+                })
+              } else if (parsed.type === 'done') {
+                if (parsed.sources) {
+                  sources = parsed.sources
+                }
+              }
+            } catch {
+              // ignore json parse chunk
+            }
+          }
+        }
+      }
+
+      // Final update with sources
+      setMessages((prev) => {
+        const copy = [...prev]
+        const lastIdx = copy.length - 1
+        if (lastIdx >= 0 && copy[lastIdx].role === 'assistant') {
+          copy[lastIdx] = {
+            ...copy[lastIdx],
+            content: accumulatedText || copy[lastIdx].content,
+            sources: sources.length > 0 ? sources : undefined,
+          }
+        }
+        return copy
+      })
+
+      // Reload session list to show updated title or new chat in sidebar
+      await loadSessions()
+    } catch (err: any) {
+      setMessages((prev) => {
+        const copy = [...prev]
+        const lastIdx = copy.length - 1
+        if (lastIdx >= 0 && copy[lastIdx].role === 'assistant') {
+          copy[lastIdx] = { ...copy[lastIdx], content: `Terjadi kesalahan saat memproses jawaban: ${err.message}` }
+        }
+        return copy
+      })
     } finally {
-      setModalLoading(false)
+      setStreaming(false)
     }
-  }
+  }, [activeId, loadSessions])
+
+  const sendMessage = useCallback(async (text: string, options?: StreamOptions) => {
+    return streamMessage(text, options)
+  }, [streamMessage])
 
   const refreshAll = useCallback(async () => {
     await loadSessions()
-    const docs = await api<{ documents: DocumentInfo[] }>('/documents')
-    setDocuments(docs.documents)
+    try {
+      const docs = await documentService.listDocuments()
+      setDocuments(docs.documents || [])
+    } catch {
+      // ignore
+    }
   }, [loadSessions])
 
   useEffect(() => {
@@ -131,6 +226,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
     createSession,
     renameSession,
     deleteSession,
+    sendMessage,
+    streamMessage,
     loadSessions,
     setMessages,
     setStreaming,
@@ -140,31 +237,6 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
   return (
     <SessionsContext.Provider value={value}>
       {children}
-
-      {/* Modal Custom Rename Sesi */}
-      <PromptDialog
-        open={renameOpen}
-        title="Ubah Nama Percakapan"
-        message="Masukkan nama baru untuk percakapan ini:"
-        defaultValue={activeSession?.title || ''}
-        placeholder="Contoh: Diskusi VLAN & Subnetting"
-        confirmText="Simpan Nama"
-        loading={modalLoading}
-        onConfirm={(val) => void handleConfirmRename(val)}
-        onClose={() => setRenameOpen(false)}
-      />
-
-      {/* Modal Custom Hapus Sesi */}
-      <ConfirmDialog
-        open={deleteOpen}
-        title="Hapus Percakapan?"
-        message={`Apakah Anda yakin ingin menghapus "${activeSession?.title}"? Riwayat pesan percakapan ini tidak dapat dikembalikan.`}
-        confirmText="Hapus Percakapan"
-        danger
-        loading={modalLoading}
-        onConfirm={() => void handleConfirmDelete()}
-        onClose={() => setDeleteOpen(false)}
-      />
     </SessionsContext.Provider>
   )
 }

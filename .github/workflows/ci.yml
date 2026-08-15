@@ -12,32 +12,44 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Bun (Frontend)
+        uses: oven-sh/setup-bun@v2
         with:
-          python-version: "3.13"
+          bun-version: latest
+
+      - name: Build Frontend SPA
+        run: |
+          cd frontend
+          bun install
+          bun run build
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
           cache: pip
 
-      # Model embedding MiniLM di-cache supaya tidak download tiap run
       - name: Cache HuggingFace models
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-models-${{ runner.os }}-${{ hashFiles('app/vector_store.py') }}
+          key: hf-models-${{ runner.os }}-${{ hashFiles('app/Repositories/VectorRepository.py') }}
 
-      # Torch CPU-only dulu supaya pip tidak menarik build CUDA yang besar
-      - name: Install torch (CPU)
+      - name: Install PyTorch (CPU-only)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      # ruff sudah di-pin di requirements.txt (section Dev) — langsung pakai
-      - name: Lint
+      - name: Lint (Ruff)
         run: ruff check .
 
-      - name: Run tests
-        run: python -m pytest tests/ -q
+      - name: Run Migrations & Seeders
+        run: python cortex migrate:fresh --seed
+
+      - name: Run Automated Pytest Suite
+        run: python cortex test

@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from fastapi.testclient import TestClient
 
+from app import learning
 from app.main import app
 
 TOKEN = "test-token-123"
@@ -114,19 +115,36 @@ def test_privacy_info_disclosure() -> None:
 
 
 def test_clear_all_user_data() -> None:
-    """DELETE /privacy/data menghapus session/chat (bukan indeks dokumen)."""
+    """DELETE /privacy/data = total wipe: chat, kuis, kartu, dan dokumen."""
     with TestClient(app) as client:
         headers = _auth(client)
+        # seed data belajar + session
+        db_path = client.app.state.settings.db_path
+        learning.save_quiz_score(db_path, "materi.pdf", 3, 5)
+        learning.save_flashcards_to_deck(
+            db_path, [{"front": "Apa itu VLAN?", "back": "Partisi broadcast."}]
+        )
         sid = client.post("/sessions/create", headers=headers).json()["session"]["id"]
         assert (
             client.get(f"/sessions/{sid}/messages", headers=headers).status_code == 200
         )
+
         resp = client.delete("/privacy/data", headers=headers)
         assert resp.status_code == 200
-        assert resp.json()["deleted"].get("sessions", 0) >= 1
+        deleted = resp.json()["deleted"]
+        assert deleted.get("sessions", 0) >= 1
+        assert deleted.get("quiz_scores", 0) >= 1, "riwayat kuis harus ikut terhapus"
+        assert deleted.get("review_cards", 0) >= 1, "kartu flashcard harus terhapus"
+        assert "chroma_documents" in deleted, "indeks dokumen harus di-reset"
+
+        # Semua sumber data sudah bersih
         assert (
             client.get(f"/sessions/{sid}/messages", headers=headers).status_code == 404
         )
+        assert client.get("/learning/quiz/history", headers=headers).json()["history"] == []
+        assert client.get("/learning/cards", headers=headers).json()["cards"] == []
+        assert client.get("/learning/progress", headers=headers).json()["progress"] == []
+        assert client.get("/learning/mastery", headers=headers).json()["mastery"] == []
 
 
 def test_clear_cache_endpoint() -> None:

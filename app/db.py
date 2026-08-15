@@ -638,20 +638,27 @@ def purge_old_chats(db_path: str | Path, days: int) -> int:
 
 
 def clear_all_user_data(db_path: str | Path) -> dict:
-    """Hapus SEMUA data pribadi: chat, ringkasan, anotasi, quiz, kartu.
+    """Hapus SEMUA data pribadi: chat, ringkasan, anotasi, kuis, kartu,
+    glossary, dan registry dokumen.
 
-    Indeks dokumen (ChromaDB) TIDAK ikut dihapus di sini — gunakan
-    reset/delete per dokumen untuk itu.
+    Nama tabel lama yang tak dikenal (mis. quiz_results) dilewati aman.
+    Indeks dokumen (ChromaDB) di-reset oleh pemanggil endpoint
+    (app.main.privacy_clear_all) — fungsi ini hanya membersihkan SQLite.
     """
     tables = [
-        "sessions",            # cascade ke messages & session_summaries
+        "sessions",
+        "messages",
+        "session_summaries",
         "annotations",
-        "review_cards",
-        "flashcards",
-        "flashcard_stats",
-        "quiz_attempts",
-        "quiz_results",
         "glossary_terms",
+        "review_cards",
+        "quiz_scores",          # riwayat skor kuis (tabel asli)
+        "quiz_attempts",
+        "flashcard_stats",
+        "flashcard_cache",
+        "documents",
+        "deleted_documents",
+        "document_categories",
     ]
     deleted: dict[str, int] = {}
     with _conn(db_path) as conn:

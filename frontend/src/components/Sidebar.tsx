@@ -1,78 +1,31 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useSessions } from '../context/SessionsContext'
-import { useCommandPalette } from '../context/CommandPaletteContext'
-import { useHealthStatus, type HealthStatus } from '../hooks/useHealthStatus'
-import { Icon } from './Icon'
+import { useHealthStatus } from '../hooks/useHealthStatus'
+import { Badge, Button, Icon, type IconName } from '../shared/components'
 
-const NAV = [
-  { to: '/library', label: 'Library', icon: 'i-file' },
-  { to: '/quiz', label: 'Quiz', icon: 'i-quiz' },
-  { to: '/flashcards', label: 'Flashcards', icon: 'i-card' },
-  { to: '/progress', label: 'Progress', icon: 'i-chart' },
-  { to: '/settings', label: 'Settings', icon: 'i-theme' },
-  { to: '/glossary', label: 'Glossary', icon: 'i-mark' },
+interface NavMenuItem {
+  to: string
+  label: string
+  icon: IconName
+}
+
+const NAV_ITEMS: NavMenuItem[] = [
+  { to: '/', label: 'Chat Studio', icon: 'chat' },
+  { to: '/library', label: 'Knowledge Library', icon: 'library' },
+  { to: '/flashcards', label: '3D Flashcards', icon: 'cards' },
+  { to: '/quiz', label: 'AI Quiz Arena', icon: 'quiz' },
+  { to: '/glossary', label: 'Glosarium', icon: 'glossary' },
+  { to: '/progress', label: 'Diagnostik & Progress', icon: 'progress' },
+  { to: '/settings', label: 'Pengaturan', icon: 'settings' },
 ]
 
-/** Link navigasi utama — dipakai di sidebar semua halaman. */
-export function NavLinks() {
-  return (
-    <nav className="side-section nav-section" aria-label="Navigasi halaman">
-      {NAV.map((item) => (
-        <NavLink
-          key={item.to}
-          to={item.to}
-          className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`}
-        >
-          <Icon name={item.icon} /> {item.label}
-        </NavLink>
-      ))}
-    </nav>
-  )
-}
-
-const STATUS_LABEL: Record<HealthStatus, string> = {
-  connecting: 'Menghubungkan…',
-  connected: 'API terhubung',
-  degraded: 'API menurun',
-  offline: 'API offline',
-}
-
-const STATUS_CLASS: Record<HealthStatus, string> = {
-  connecting: 'is-connecting',
-  connected: 'is-ok',
-  degraded: 'is-degraded',
-  offline: 'is-error',
-}
-
-/** Indikator live status API — polling /health; klik untuk cek ulang manual. */
-function HealthIndicator() {
-  const { status, checkedAt, retry } = useHealthStatus()
-  const lastChecked = checkedAt
-    ? checkedAt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-    : '—'
-  return (
-    <button
-      type="button"
-      className={`status-line ${STATUS_CLASS[status]}`}
-      onClick={() => void retry()}
-      title={`Status API: ${STATUS_LABEL[status]} — dicek terakhir ${lastChecked}. Klik untuk cek ulang.`}
-      aria-label={`Status API: ${STATUS_LABEL[status]}. Klik untuk cek ulang.`}
-    >
-      <span className="status-dot" />
-      <span>{STATUS_LABEL[status]}</span>
-      {status !== 'connected' && <Icon name="i-refresh" className="icon status-refresh" />}
-    </button>
-  )
-}
-
-/** Sidebar lengkap: brand + navigasi + sessions (chat) + perintah + status. */
 export function Sidebar({ children }: { children?: React.ReactNode }) {
   const { createSession } = useSessions()
-  const { openCommandPalette } = useCommandPalette()
+  const { status, retry } = useHealthStatus()
   const [creating, setCreating] = useState(false)
 
-  async function handleCreate() {
+  const handleCreate = async () => {
     if (creating) return
     setCreating(true)
     try {
@@ -83,63 +36,92 @@ export function Sidebar({ children }: { children?: React.ReactNode }) {
   }
 
   return (
-    <aside className="sidebar" aria-label="Navigasi workspace">
+    <aside className="sidebar">
+      {/* Brand Header */}
       <div className="brand-row">
-        <NavLink className="brand" to="/" aria-label="Knowledge Base beranda">
-          <span className="brand-mark">
-            <Icon name="i-mark" />
-          </span>
-          <span>
-            Knowledge
-            <br />
-            Base
-          </span>
+        <NavLink to="/" className="brand-logo">
+          <div className="brand-icon-wrap">
+            <Icon name="brain" size={20} />
+          </div>
+          <div>
+            <div style={{ lineHeight: '1.2' }}>Cortex AI</div>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: '500' }}>Knowledge Studio</div>
+          </div>
         </NavLink>
       </div>
 
-      <button className="new-chat" type="button" disabled={creating} onClick={() => void handleCreate()}>
-        {creating ? <span className="spinner" style={{ marginRight: '0.4rem' }} /> : <Icon name="i-plus" />}
-        <span>{creating ? 'Membuat Chat…' : 'Chat baru'}</span>
+      {/* New Chat CTA */}
+      <button className="new-chat-btn" onClick={handleCreate} disabled={creating}>
+        <Icon name="plus" size={16} />
+        <span>{creating ? 'Membuat...' : 'Chat Baru'}</span>
       </button>
 
-      <NavLinks />
+      {/* Main Navigation Menu */}
+      <nav className="nav-menu">
+        {NAV_ITEMS.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            end={item.to === '/'}
+          >
+            <Icon name={item.icon} size={18} />
+            <span>{item.label}</span>
+          </NavLink>
+        ))}
+      </nav>
 
+      {/* Custom Section (Sessions on Chat page) */}
       {children}
 
+      {/* Sidebar Footer */}
       <div className="sidebar-bottom">
-        <button className="command-button" type="button" title="Ctrl K" onClick={openCommandPalette}>
-          <span>Perintah</span>
-          <kbd>Ctrl K</kbd>
-        </button>
-        <HealthIndicator />
+        <div className="status-pill" onClick={() => void retry()} style={{ cursor: 'pointer' }}>
+          <div
+            className="status-indicator"
+            style={{
+              background: status === 'connected' ? 'var(--success)' : status === 'degraded' ? 'var(--warning)' : 'var(--error)',
+              boxShadow: status === 'connected' ? '0 0 8px var(--success)' : 'none',
+            }}
+          />
+          <span>{status === 'connected' ? 'API Terhubung' : status === 'degraded' ? 'Degraded' : 'Offline'}</span>
+        </div>
+        <Badge variant="neutral" size="sm">v3.0.0</Badge>
       </div>
     </aside>
   )
 }
 
-/** Section sessions (chat) untuk sidebar — dipakai di halaman chat. */
 export function SessionsSection() {
   const { sessions, activeId, selectSession } = useSessions()
+
   return (
-    <section className="side-section session-section" aria-labelledby="sessions-label">
-      <div className="section-label-row">
-        <h2 id="sessions-label">Percakapan</h2>
-        <span className="badge">{sessions.length}</span>
+    <div className="sidebar-sessions">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 0.5rem' }}>
+        <span className="sessions-title">Riwayat Chat</span>
+        <Badge variant="neutral" size="sm">{sessions.length}</Badge>
       </div>
-      <div className="session-list" aria-live="polite">
-        {sessions.length === 0 && <p className="empty-list">Belum ada chat.</p>}
-        {sessions.map((session) => (
-          <button
-            key={session.id}
-            type="button"
-            className={`session-button${session.id === activeId ? ' is-active' : ''}`}
-            title={session.title}
-            onClick={() => void selectSession(session.id)}
-          >
-            <span>{session.title}</span>
-          </button>
-        ))}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+        {sessions.length === 0 ? (
+          <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', padding: '0.5rem 0.75rem' }}>
+            Belum ada riwayat percakapan.
+          </p>
+        ) : (
+          sessions.map((s) => (
+            <button
+              key={s.id}
+              className={`session-link ${s.id === activeId ? 'active' : ''}`}
+              onClick={() => void selectSession(s.id)}
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '190px' }}>
+                {s.title}
+              </span>
+              <Icon name="chevron-right" size={14} style={{ opacity: s.id === activeId ? 1 : 0.4 }} />
+            </button>
+          ))
+        )}
       </div>
-    </section>
+    </div>
   )
 }

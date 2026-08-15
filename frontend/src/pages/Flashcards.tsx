@@ -1,320 +1,671 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type DocumentInfo, type Flashcard } from '../api'
-import { Icon } from '../components/Icon'
-import { Markdown } from '../components/Markdown'
-import { usePageHeader } from '../components/PageHeader'
-import { useToast } from '../components/Toast'
+import React, { useEffect, useState } from 'react'
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Icon,
+  Input,
+  Markdown,
+  Modal,
+  PageHeader,
+  Select,
+  Spinner,
+  StatCard,
+  Tabs,
+} from '../shared/components'
+import { useToast } from '../shared/hooks'
+import { documentService, learningService } from '../shared/services'
+import type { AIFlashcard, CardStats, DocumentInfo, Flashcard, ReviewCard } from '../shared/types'
 
-interface CardStat {
-  heading: string
-  source: string
-  known_count: number
-  unknown_count: number
-}
-
-/** Halaman /flashcards — Kartu Belajar 3D dengan Spaced Repetition. */
 export default function Flashcards() {
-  const toast = useToast()
+  const { addToast } = useToast()
+  const [mode, setMode] = useState<'due' | 'deck' | 'heading'>('due')
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
-  const [source, setSource] = useState('')
-  const [cards, setCards] = useState<Flashcard[]>([])
-  const [index, setIndex] = useState(0)
-  const [flipped, setFlipped] = useState(false)
-  const [shuffle, setShuffle] = useState(false)
-  const [stats, setStats] = useState<Record<string, CardStat>>({})
-  const [loading, setLoading] = useState(false)
-  const [answering, setAnswering] = useState(false)
+  const [selectedDoc, setSelectedDoc] = useState<string>('')
 
-  usePageHeader({ eyebrow: 'KARTU BELAJAR', title: 'Flashcards 3D' })
+  // SM-2 Review State
+  const [dueCards, setDueCards] = useState<ReviewCard[]>([])
+  const [deckCards, setDeckCards] = useState<ReviewCard[]>([])
+  const [cardStats, setCardStats] = useState<CardStats>({ total: 0, due_today: 0, avg_lapses: 0 })
+  const [currentIndex, setCurrentIndex] = useState(0)
+  const [isFlipped, setIsFlipped] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
 
-  const loadStats = useCallback(async () => {
-    try {
-      const data = await api<{ stats: CardStat[] }>('/learning/flashcards/stats')
-      setStats(Object.fromEntries(data.stats.map((s) => [s.heading, s])))
-    } catch {
-      /* non-kritis */
-    }
+  // Chunk Flashcards Fallback
+  const [chunkCards, setChunkCards] = useState<Flashcard[]>([])
+
+  // AI Flashcards Modal
+  const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false)
+  const [genDoc, setGenDoc] = useState('')
+  const [genCount, setGenCount] = useState(5)
+  const [generating, setGenerating] = useState(false)
+  const [generatedPreview, setGeneratedPreview] = useState<AIFlashcard[]>([])
+
+  // Custom Card Modal
+  const [isCustomModalOpen, setIsCustomModalOpen] = useState(false)
+  const [customQuestion, setCustomQuestion] = useState('')
+  const [customAnswer, setCustomAnswer] = useState('')
+  const [customSource, setCustomSource] = useState('')
+  const [savingCustom, setSavingCustom] = useState(false)
+
+  // Delete Card Confirm
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
+  const [deletingCard, setDeletingCard] = useState(false)
+
+  useEffect(() => {
+    loadDocuments()
+    loadDueCards()
   }, [])
 
   useEffect(() => {
-    void api<{ documents: DocumentInfo[] }>('/documents').then((d) => setDocuments(d.documents))
-    void loadStats()
-  }, [loadStats])
-
-  const orderedCards = useMemo(() => {
-    const list = [...cards]
-    if (shuffle) {
-      for (let i = list.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1))
-        ;[list[i], list[j]] = [list[j]!, list[i]!]
-      }
+    if (mode === 'due') {
+      loadDueCards(selectedDoc)
+    } else if (mode === 'deck') {
+      loadDeckCards(selectedDoc)
+    } else if (mode === 'heading') {
+      loadChunkCards(selectedDoc)
     }
-    return list
-  }, [cards, shuffle])
+  }, [mode, selectedDoc])
 
-  const current = orderedCards[index]
+  const loadDocuments = async () => {
+    try {
+      const res = await documentService.listDocuments()
+      setDocuments(res.documents || [])
+    } catch {
+      // ignore
+    }
+  }
 
-  async function load() {
+  const loadDueCards = async (doc?: string) => {
     setLoading(true)
     try {
-      const data = await api<{ cards: Flashcard[] }>(
-        `/learning/flashcards?source=${encodeURIComponent(source || '')}`,
-      )
-      setCards(data.cards || [])
-      setIndex(0)
-      setFlipped(false)
-      void loadStats()
-      toast(`Berhasil memuat ${data.cards.length} kartu belajar.`)
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Gagal memuat kartu.')
+      const res = await learningService.getDueCards(doc || null, 30)
+      setDueCards(res.cards || [])
+      setCardStats(res.stats || { total: 0, due_today: 0, avg_lapses: 0 })
+      setCurrentIndex(0)
+      setIsFlipped(false)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat kartu review.', 'error')
     } finally {
       setLoading(false)
     }
   }
 
-  async function answer(known: boolean) {
-    if (!current || answering) return
-    setAnswering(true)
+  const loadDeckCards = async (doc?: string) => {
+    setLoading(true)
     try {
-      await api('/learning/flashcards/answer', {
-        method: 'POST',
-        body: JSON.stringify({ heading: current.heading, source: source || '', known }),
-      })
-      toast(known ? 'Kartu ditandai Sudah Tahu!' : 'Kartu ditandai Perlu Belajar Lagi')
-      void loadStats()
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Gagal menyimpan jawaban.')
+      const res = await learningService.listCards(doc || null, 100)
+      setDeckCards(res.cards || [])
+      setCardStats(res.stats || { total: 0, due_today: 0, avg_lapses: 0 })
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat daftar dek kartu.', 'error')
     } finally {
-      setAnswering(false)
+      setLoading(false)
     }
-    setFlipped(false)
-    setIndex((i) => (i + 1) % orderedCards.length)
   }
 
-  // Keyboard navigation
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) {
-        return
-      }
-      if (e.code === 'Space') {
-        e.preventDefault()
-        setFlipped((f) => !f)
-      } else if (e.code === 'ArrowLeft') {
-        setIndex((i) => (i - 1 + orderedCards.length) % (orderedCards.length || 1))
-        setFlipped(false)
-      } else if (e.code === 'ArrowRight') {
-        setIndex((i) => (i + 1) % (orderedCards.length || 1))
-        setFlipped(false)
-      }
+  const loadChunkCards = async (doc?: string) => {
+    setLoading(true)
+    try {
+      const res = await learningService.getFlashcards(doc || null, 30)
+      setChunkCards(res.cards || [])
+      setCurrentIndex(0)
+      setIsFlipped(false)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat flashcard chunk dokumen.', 'error')
+    } finally {
+      setLoading(false)
     }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [orderedCards.length])
+  }
 
-  const answered = orderedCards.filter((c) => stats[c.heading]).length
-  const progress = orderedCards.length ? Math.round((answered / orderedCards.length) * 100) : 0
+  const handleRatingAnswer = async (rating: number) => {
+    if (dueCards.length === 0) return
+    const card = dueCards[currentIndex]
+    if (!card) return
 
-  const groupedDocs = useMemo(() => {
-    const map: Record<string, DocumentInfo[]> = {}
-    for (const doc of documents) {
-      const cat = doc.category || 'Umum'
-      map[cat] = map[cat] || []
-      map[cat].push(doc)
+    setSubmitting(true)
+    try {
+      await learningService.answerCard(card.card_id, rating)
+      const labels = ['', 'Ditandai lupa, akan diulang segera', 'Ditandai ragu, interval 1 hari', 'Bagus! Dijadwalkan ulang sesuai SM-2', 'Luar biasa! Penguasaan materi meningkat']
+      addToast(labels[rating] || 'Hasil review dicatat!', rating >= 3 ? 'success' : 'warning')
+
+      if (currentIndex < dueCards.length - 1) {
+        setCurrentIndex((prev) => prev + 1)
+        setIsFlipped(false)
+      } else {
+        loadDueCards(selectedDoc)
+      }
+    } catch (err: any) {
+      addToast(err.message || 'Gagal mencatat respon review.', 'error')
+    } finally {
+      setSubmitting(false)
     }
-    return map
-  }, [documents])
+  }
+
+  const handleStartGenerate = async () => {
+    setGenerating(true)
+    try {
+      const res = await learningService.generateFlashcards(genDoc || null, genCount, true)
+      setGeneratedPreview(res.cards || [])
+      addToast(`Berhasil menyusun ${res.cards?.length || 0} flashcard AI berkualitas tinggi!`, 'success')
+      setIsGenerateModalOpen(false)
+      loadDueCards(selectedDoc)
+      loadDeckCards(selectedDoc)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal menyusun flashcard AI.', 'error')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  const handleCreateCustom = async () => {
+    if (!customQuestion.trim() || !customAnswer.trim()) {
+      addToast('Pertanyaan dan jawaban wajib diisi.', 'warning')
+      return
+    }
+
+    setSavingCustom(true)
+    try {
+      await learningService.createCustomCard(customQuestion, customAnswer, customSource || null)
+      addToast('Kartu kustom berhasil ditambahkan ke dek!', 'success')
+      setIsCustomModalOpen(false)
+      setCustomQuestion('')
+      setCustomAnswer('')
+      setCustomSource('')
+      loadDueCards(selectedDoc)
+      loadDeckCards(selectedDoc)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal membuat kartu.', 'error')
+    } finally {
+      setSavingCustom(false)
+    }
+  }
+
+  const handleDeleteCard = async () => {
+    if (!deleteTargetId) return
+    setDeletingCard(true)
+    try {
+      await learningService.deleteCard(deleteTargetId)
+      addToast('Kartu berhasil dihapus dari dek.', 'info')
+      setDeleteTargetId(null)
+      loadDueCards(selectedDoc)
+      loadDeckCards(selectedDoc)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal menghapus kartu.', 'error')
+    } finally {
+      setDeletingCard(false)
+    }
+  }
+
+  const activeCards = mode === 'due' ? dueCards : chunkCards
+  const currentCard = activeCards[currentIndex]
 
   return (
-    <div className="page-content">
-      {/* Top Filter & Control Card */}
-      <section className="library-card" style={{ padding: 'var(--space-4) var(--space-5)' }}>
-        <div className="quiz-setup" style={{ marginBottom: 0 }}>
-          <label className="field-label" style={{ flex: 1, minWidth: '15rem', marginBottom: 0 }}>
-            Pilih Dokumen Sumber Materi
-            <select value={source} onChange={(e) => setSource(e.target.value)} disabled={loading || answering}>
-              <option value="">Semua Dokumen Terindeks</option>
-              {Object.entries(groupedDocs).map(([cat, docs]) => (
-                <optgroup key={cat} label={`📂 Kategori: ${cat}`}>
-                  {docs.map((doc) => (
-                    <option key={doc.source} value={doc.source}>
-                      {doc.source} ({doc.chunks} chunk)
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </label>
+    <div className="page-container">
+      <PageHeader
+        title="3D Spaced Repetition Flashcards"
+        subtitle="Hafalkan dan kuasai konsep kunci materi dengan algoritma penjadwalan cerdas SM-2."
+        actions={
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <Button
+              variant="secondary"
+              icon="sparkles"
+              onClick={() => {
+                setGenDoc(selectedDoc || '')
+                setIsGenerateModalOpen(true)
+              }}
+            >
+              Generate AI Flashcards
+            </Button>
+            <Button
+              variant="primary"
+              icon="plus"
+              onClick={() => {
+                setCustomSource(selectedDoc || '')
+                setIsCustomModalOpen(true)
+              }}
+            >
+              Buat Kartu Manual
+            </Button>
+          </div>
+        }
+      />
 
-          <button className="button button-primary" type="button" onClick={() => void load()} disabled={loading || answering}>
-            {loading ? (
-              <>
-                <span className="spinner" style={{ marginRight: '0.4rem' }} /> Memuat Kartu…
-              </>
-            ) : (
-              <>
-                <Icon name="i-card" /> Muat Kartu Belajar
-              </>
-            )}
-          </button>
+      {/* Mode Tabs */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <Tabs
+          items={[
+            { id: 'due', label: 'Uji Harian (Due SM-2)', icon: 'clock', badge: cardStats.due_today },
+            { id: 'deck', label: 'Kelola Dek Kartu', icon: 'cards', badge: cardStats.total },
+            { id: 'heading', label: 'Eksplorasi Dokumen', icon: 'library' },
+          ]}
+          activeId={mode}
+          onChange={(id) => setMode(id as any)}
+        />
 
-          <label className="field-label checkbox-inline" style={{ marginBottom: 0, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
-            <input
-              type="checkbox"
-              checked={shuffle}
-              disabled={loading || answering}
-              onChange={(e) => {
-                setShuffle(e.target.checked)
-                setIndex(0)
+        <div style={{ minWidth: '220px' }}>
+          <Select
+            value={selectedDoc}
+            onChange={(e) => setSelectedDoc(e.target.value)}
+            options={[
+              { value: '', label: 'Semua Dokumen' },
+              ...documents.map((d) => ({ value: d.source, label: d.source })),
+            ]}
+          />
+        </div>
+      </div>
+
+      {/* KPI Metrics */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
+        <StatCard title="Kartu Due Hari Ini" value={cardStats.due_today} icon="clock" subtitle="Perlu diulang sekarang" />
+        <StatCard title="Total Kartu Aktif" value={cardStats.total} icon="cards" subtitle="Tersimpan dalam memori SM-2" />
+        <StatCard title="Rata-rata Lapses" value={cardStats.avg_lapses} icon="brain" subtitle="Frekuensi lupa materi" />
+      </div>
+
+      {/* Main Content Area */}
+      {loading ? (
+        <Card style={{ padding: '4rem', display: 'flex', justifyContent: 'center' }}>
+          <Spinner size="lg" text="Memuat dek kartu flashcard..." />
+        </Card>
+      ) : mode === 'deck' ? (
+        /* Deck Library Manager View */
+        deckCards.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon="cards"
+              title="Dek Kartu Masih Kosong"
+              description="Belum ada flashcard yang dibuat. Gunakan AI untuk membuat flashcard otomatis dari dokumen Anda atau buat kartu manual."
+              actionLabel="Generate AI Flashcards"
+              actionIcon="sparkles"
+              onAction={() => {
+                setGenDoc(selectedDoc || '')
+                setIsGenerateModalOpen(true)
               }}
             />
-            <Icon name="i-shuffle" /> Acak Urutan Kartu
-          </label>
-        </div>
-      </section>
+          </Card>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.25rem' }}>
+            {deckCards.map((card) => (
+              <Card key={card.card_id} padding="md" hover>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem', gap: '0.5rem' }}>
+                  <Badge variant="primary" size="sm">
+                    {card.source || 'Umum'}
+                  </Badge>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      Int: {card.interval_days}h • Rep: {card.repetitions || 0}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTargetId(card.card_id)}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '2px' }}
+                      title="Hapus Kartu"
+                    >
+                      <Icon name="trash" size={14} />
+                    </button>
+                  </div>
+                </div>
 
-      {/* Empty State */}
-      {cards.length === 0 && !loading && (
-        <div className="empty-state" style={{ margin: '3rem auto' }}>
-          <div className="empty-icon">
-            <Icon name="i-card" />
+                <div style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
+                  {card.question}
+                </div>
+
+                {card.answer && (
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', background: 'var(--bg-surface-raised)', padding: '0.65rem 0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', marginBottom: '0.75rem', maxHeight: '120px', overflowY: 'auto' }}>
+                    <Markdown content={card.answer} />
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', borderTop: '1px solid var(--border-subtle)', paddingTop: '0.5rem' }}>
+                  <span>Jadwal: {card.next_due ? card.next_due.substring(0, 10) : 'Hari ini'}</span>
+                  <span>Lapses: {card.lapses}x</span>
+                </div>
+              </Card>
+            ))}
           </div>
-          <h2>Flashcards Materi Pembelajaran</h2>
-          <p>Pilih dokumen sumber di atas lalu klik <strong>Muat Kartu Belajar</strong> untuk memulai sesi belajar memori.</p>
-        </div>
-      )}
-
-      {/* Main Flashcard Stage */}
-      {current && (
-        <div className="flashcard-stage" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
-          {/* Progress Header */}
-          <div className="library-card" style={{ padding: 'var(--space-3) var(--space-5)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-              <span className="stat-label">
-                Kartu {index + 1} dari {orderedCards.length}
-              </span>
-              <span className="badge">{progress}% Sudah Dijawab</span>
-            </div>
-            <div className="progress-track" style={{ height: '0.5rem' }}>
-              <div className="progress-fill" style={{ width: `${progress}%` }} />
-            </div>
-          </div>
-
-          {/* Flashcard Stats & Badge */}
-          <div style={{ display: 'flex', justifyContent: 'between', alignItems: 'center', maxWidth: '38rem', margin: '0 auto', width: '100%' }}>
-            <span className="badge" style={{ background: 'var(--color-paper-soft)', border: '1px solid var(--color-rule)' }}>
-              {source || 'Semua Dokumen'}
+        )
+      ) : activeCards.length === 0 ? (
+        /* Empty State for Review */
+        <Card>
+          <EmptyState
+            icon="award"
+            title="Semua Kartu Hari Ini Sudah Tuntas!"
+            description={mode === 'due' ? "Hebat! Tidak ada kartu review yang jatuh tempo untuk saat ini. Anda bisa membuat flashcard baru atau melihat seluruh dek." : "Tidak ada flashcard ditemukan untuk filter ini."}
+            actionLabel="Generate AI Flashcard Baru"
+            actionIcon="sparkles"
+            onAction={() => {
+              setGenDoc(selectedDoc || '')
+              setIsGenerateModalOpen(true)
+            }}
+          />
+        </Card>
+      ) : (
+        /* 3D Interactive Flip Card Arena */
+        <div style={{ maxWidth: '640px', margin: '0 auto' }}>
+          {/* Card Counter & Navigation */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+            <Badge variant="primary" dot>
+              Kartu {currentIndex + 1} dari {activeCards.length}
+            </Badge>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Klik kartu untuk membalik (Flip)
             </span>
-            <span className="flashcard-counter" style={{ marginLeft: 'auto' }}>
-              {stats[current.heading]?.known_count || 0}× Tahu · {stats[current.heading]?.unknown_count || 0}× Belum
-            </span>
           </div>
 
-          {/* 3D Flip Card Component */}
-          <div className="flashcard-perspective">
-            <button
-              className={`flashcard-3d${flipped ? ' is-flipped' : ''}`}
-              type="button"
-              onClick={() => setFlipped((v) => !v)}
-              aria-label="Balik kartu"
+          {/* 3D Card Box */}
+          <div
+            onClick={() => setIsFlipped(!isFlipped)}
+            style={{
+              perspective: '1200px',
+              minHeight: '340px',
+              cursor: 'pointer',
+              marginBottom: '1.5rem',
+            }}
+          >
+            <div
+              style={{
+                position: 'relative',
+                width: '100%',
+                minHeight: '340px',
+                transition: 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
+                transformStyle: 'preserve-3d',
+                transform: isFlipped ? 'rotateY(180deg)' : 'none',
+              }}
             >
-              {/* Front Face */}
-              <div className="flashcard-face front">
-                <span className="badge" style={{ marginBottom: 'var(--space-3)', fontSize: '0.7rem' }}>
-                  PERTANYAAN / TOPIC
-                </span>
-                <h3 style={{ fontSize: 'var(--text-lg)', fontWeight: 800, color: 'var(--color-ink)', margin: 0 }}>
-                  {current.heading}
-                </h3>
-                <div className="flashcard-hint">
-                  <Icon name="i-zap" /> Klik atau tekan <strong>Spasi</strong> untuk melihat jawaban
+              {/* Front Side */}
+              <div
+                style={{
+                  position: isFlipped ? 'absolute' : 'relative',
+                  width: '100%',
+                  minHeight: '340px',
+                  backfaceVisibility: 'hidden',
+                  borderRadius: 'var(--radius-xl)',
+                  background: 'var(--glass-bg)',
+                  border: '1px solid var(--glass-border)',
+                  boxShadow: 'var(--glass-shadow)',
+                  backdropFilter: 'blur(16px)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  padding: '2rem',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Badge variant="secondary" icon="quiz">
+                    Pertanyaan / Konsep
+                  </Badge>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    <Icon name="file" size={13} />
+                    {currentCard && 'source' in currentCard ? currentCard.source : 'Dokumen'}
+                  </span>
+                </div>
+
+                <div style={{ margin: '1.5rem 0', textAlign: 'center' }}>
+                  <h3 style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)', lineHeight: '1.6' }}>
+                    {currentCard && ('question' in currentCard ? currentCard.question : currentCard.heading)}
+                  </h3>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.4rem', textAlign: 'center', fontSize: '0.8rem', color: 'var(--accent)', fontWeight: '600' }}>
+                  <Icon name="refresh" size={14} />
+                  Klik untuk melihat jawaban & penjelasan
                 </div>
               </div>
 
-              {/* Back Face */}
-              <div className="flashcard-face back">
-                <span className="badge" style={{ marginBottom: 'var(--space-3)', fontSize: '0.7rem', background: 'var(--color-accent-glow)', color: 'var(--color-accent)' }}>
-                  PENJELASAN / RINGKASAN
-                </span>
-                <div style={{ textAlign: 'left', width: '100%', maxHeight: '10rem', overflowY: 'auto' }}>
-                  <Markdown content={current.content || ''} />
+              {/* Back Side */}
+              <div
+                style={{
+                  position: isFlipped ? 'relative' : 'absolute',
+                  width: '100%',
+                  minHeight: '340px',
+                  backfaceVisibility: 'hidden',
+                  transform: 'rotateY(180deg)',
+                  borderRadius: 'var(--radius-xl)',
+                  background: 'var(--bg-surface)',
+                  border: '1px solid var(--border-default)',
+                  boxShadow: 'var(--shadow-lg)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'space-between',
+                  padding: '2rem',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Badge variant="success" icon="check">
+                    Kunci Jawaban & Penjelasan
+                  </Badge>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    {currentCard && 'source' in currentCard ? currentCard.source : ''}
+                  </span>
                 </div>
-                <div className="flashcard-hint">
-                  <Icon name="i-zap" /> Klik untuk balik ke depan
+
+                <div style={{ margin: '1rem 0', textAlign: 'left', maxHeight: '180px', overflowY: 'auto', paddingRight: '0.5rem' }}>
+                  {currentCard && 'answer' in currentCard && currentCard.answer ? (
+                    <Markdown content={currentCard.answer} />
+                  ) : currentCard && 'content' in currentCard ? (
+                    <Markdown content={currentCard.content} />
+                  ) : (
+                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.92rem' }}>
+                      {currentCard && 'question' in currentCard ? currentCard.question : ''}
+                    </p>
+                  )}
+                </div>
+
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+                  Evaluasi tingkat pemahaman Anda di bawah untuk menjadwalkan repetisi berikutnya
                 </div>
               </div>
-            </button>
+            </div>
           </div>
 
-          {/* Navigation Controls */}
-          <div className="flashcard-nav" style={{ justifyContent: 'center' }}>
-            <button
-              className="button button-secondary"
-              type="button"
-              disabled={answering}
-              onClick={() => {
-                setIndex((i) => (i - 1 + orderedCards.length) % orderedCards.length)
-                setFlipped(false)
-              }}
-            >
-              ‹ Kartu Sebelumnya
-            </button>
-            <button
-              className="button button-secondary"
-              type="button"
-              disabled={answering}
-              onClick={() => {
-                setIndex((i) => (i + 1) % orderedCards.length)
-                setFlipped(false)
-              }}
-            >
-              Kartu Berikutnya ›
-            </button>
-          </div>
+          {/* SM-2 Rating Controls (Visible when flipped in Due mode) */}
+          {mode === 'due' && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', animation: 'fadeIn 0.2s ease-out' }}>
+              <Button
+                variant="danger"
+                size="md"
+                icon="x"
+                className="btn--stack"
+                onClick={() => handleRatingAnswer(1)}
+                loading={submitting}
+              >
+                <span>Lupa</span>
+                <span className="btn__hint">Ulangi Segera</span>
+              </Button>
 
-          {/* Mastery Evaluation Controls */}
-          <div className="flashcard-nav" style={{ justifyContent: 'center', gap: 'var(--space-4)', marginTop: 'var(--space-2)' }}>
-            <button
-              className="button"
-              type="button"
-              disabled={answering}
-              onClick={() => void answer(false)}
-              style={{
-                background: 'var(--color-error-bg)',
-                color: 'var(--color-error)',
-                border: '1px solid var(--color-error)',
-                minWidth: '10rem',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '0.4rem',
-              }}
-            >
-              {answering ? <span className="spinner" /> : <Icon name="i-close" />}
-              <span>Belum Tahu</span>
-            </button>
-            <button
-              className="button"
-              type="button"
-              disabled={answering}
-              onClick={() => void answer(true)}
-              style={{
-                background: 'var(--color-success-bg)',
-                color: 'var(--color-success)',
-                border: '1px solid var(--color-success)',
-                minWidth: '10rem',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '0.4rem',
-              }}
-            >
-              {answering ? <span className="spinner" /> : <Icon name="i-check" />}
-              <span>Sudah Tahu</span>
-            </button>
-          </div>
+              <Button
+                variant="warning"
+                size="md"
+                icon="alert"
+                className="btn--stack"
+                onClick={() => handleRatingAnswer(2)}
+                loading={submitting}
+              >
+                <span>Ragu</span>
+                <span className="btn__hint">+1 Hari</span>
+              </Button>
+
+              <Button
+                variant="success"
+                size="md"
+                icon="check"
+                className="btn--stack"
+                onClick={() => handleRatingAnswer(3)}
+                loading={submitting}
+              >
+                <span>Ingat</span>
+                <span className="btn__hint">+6 Hari</span>
+              </Button>
+
+              <Button
+                variant="primary"
+                size="md"
+                icon="award"
+                className="btn--stack"
+                onClick={() => handleRatingAnswer(4)}
+                loading={submitting}
+              >
+                <span>Sangat Paham</span>
+                <span className="btn__hint">Perpanjang</span>
+              </Button>
+            </div>
+          )}
+
+          {/* Next / Prev Buttons for Heading Mode */}
+          {mode === 'heading' && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Button
+                variant="secondary"
+                icon="arrow-left"
+                disabled={currentIndex === 0}
+                onClick={() => {
+                  setCurrentIndex((prev) => Math.max(0, prev - 1))
+                  setIsFlipped(false)
+                }}
+              >
+                Sebelumnya
+              </Button>
+              <Button
+                variant="primary"
+                icon="arrow-right"
+                iconPosition="right"
+                disabled={currentIndex >= activeCards.length - 1}
+                onClick={() => {
+                  setCurrentIndex((prev) => Math.min(activeCards.length - 1, prev + 1))
+                  setIsFlipped(false)
+                }}
+              >
+                Selanjutnya
+              </Button>
+            </div>
+          )}
         </div>
       )}
+
+      {/* AI Flashcard Generator Modal */}
+      <Modal
+        isOpen={isGenerateModalOpen}
+        onClose={() => setIsGenerateModalOpen(false)}
+        title="✨ Generate AI Flashcards"
+        subtitle="AI akan membaca isi dokumen dan membuat kartu tanya-jawab konsep esensial secara otomatis."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setIsGenerateModalOpen(false)} disabled={generating}>
+              Batal
+            </Button>
+            <Button variant="primary" icon="sparkles" onClick={handleStartGenerate} loading={generating}>
+              Mulai Susun Flashcards
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          <Select
+            label="Pilih Dokumen Sumber"
+            value={genDoc}
+            onChange={(e) => setGenDoc(e.target.value)}
+            options={[
+              { value: '', label: 'Semua Dokumen Terindeks' },
+              ...documents.map((d) => ({ value: d.source, label: d.source })),
+            ]}
+          />
+
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <label style={{ fontSize: '0.78rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
+                Jumlah Kartu Flashcard
+              </label>
+              <Badge variant="primary">{genCount} Kartu</Badge>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {[3, 5, 10, 15, 20].map((num) => (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => setGenCount(num)}
+                  style={{
+                    flex: 1,
+                    minWidth: '55px',
+                    padding: '0.45rem',
+                    borderRadius: 'var(--radius-sm)',
+                    background: genCount === num ? 'var(--accent)' : 'var(--bg-surface-raised)',
+                    color: genCount === num ? '#fff' : 'var(--text-primary)',
+                    border: `1px solid ${genCount === num ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                    fontWeight: '600',
+                    fontSize: '0.82rem',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {num} Kartu
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Custom Card Modal */}
+      <Modal
+        isOpen={isCustomModalOpen}
+        onClose={() => setIsCustomModalOpen(false)}
+        title="+ Buat Kartu Flashcard Manual"
+        subtitle="Tambahkan pertanyaan dan jawaban kustom Anda ke dalam memori Spaced Repetition."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setIsCustomModalOpen(false)} disabled={savingCustom}>
+              Batal
+            </Button>
+            <Button variant="primary" icon="check" onClick={handleCreateCustom} loading={savingCustom}>
+              Simpan ke Dek
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <Input
+            label="Pertanyaan / Konsep (Bagian Depan)"
+            placeholder="Contoh: Apa kegunaan port 80 dan 443 pada web server?"
+            value={customQuestion}
+            onChange={(e) => setCustomQuestion(e.target.value)}
+          />
+
+          <div className="form-group">
+            <label className="form-label">Jawaban / Penjelasan (Bagian Belakang)</label>
+            <textarea
+              className="form-input"
+              rows={4}
+              placeholder="Tuliskan jawaban yang ringkas dan padat..."
+              value={customAnswer}
+              onChange={(e) => setCustomAnswer(e.target.value)}
+            />
+          </div>
+
+          <Select
+            label="Kaitkan Dokumen Sumber (Opsional)"
+            value={customSource}
+            onChange={(e) => setCustomSource(e.target.value)}
+            options={[
+              { value: '', label: 'Umum (Tanpa Dokumen Tertentu)' },
+              ...documents.map((d) => ({ value: d.source, label: d.source })),
+            ]}
+          />
+        </div>
+      </Modal>
+
+      {/* Delete Card Confirm */}
+      <ConfirmDialog
+        isOpen={!!deleteTargetId}
+        title="Hapus Kartu Flashcard"
+        description="Apakah Anda yakin ingin menghapus kartu ini dari dek Spaced Repetition?"
+        confirmText="Hapus Kartu"
+        variant="danger"
+        loading={deletingCard}
+        onConfirm={handleDeleteCard}
+        onCancel={() => setDeleteTargetId(null)}
+      />
     </div>
   )
 }

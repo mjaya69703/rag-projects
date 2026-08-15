@@ -1,330 +1,564 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { api, type DocumentInfo, type GlossaryTerm } from '../api'
-import { Dialog, DialogHeading } from '../components/Dialog'
-import { Icon } from '../components/Icon'
-import { usePageHeader } from '../components/PageHeader'
-import { useToast } from '../components/Toast'
-
-interface FormState {
-  term: string
-  definition: string
-  source: string
-  page: string
-  category: string
-  verified: boolean
-}
-
-interface Candidate {
-  term: string
-  definition: string
-  source: string
-  page: number | null
-  category: string
-  selected: boolean
-}
-
-const EMPTY_FORM: FormState = {
-  term: '',
-  definition: '',
-  source: '',
-  page: '',
-  category: 'Umum',
-  verified: false,
-}
+import React, { useEffect, useState } from 'react'
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Icon,
+  Input,
+  Modal,
+  PageHeader,
+  Select,
+  Spinner,
+} from '../shared/components'
+import { useToast } from '../shared/hooks'
+import { documentService, glossaryService } from '../shared/services'
+import type { DocumentInfo, GlossaryTerm } from '../shared/types'
 
 export default function Glossary() {
-  const toast = useToast()
+  const { addToast } = useToast()
   const [terms, setTerms] = useState<GlossaryTerm[]>([])
-  const [query, setQuery] = useState('')
-  const [search, setSearch] = useState('')
-  const [verifiedOnly, setVerifiedOnly] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [deleting, setDeleting] = useState<number | null>(null)
-  const [editing, setEditing] = useState<GlossaryTerm | null>(null)
-  const [formOpen, setFormOpen] = useState(false)
-  const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
-  const [extractOpen, setExtractOpen] = useState(false)
-  const [extracting, setExtracting] = useState(false)
-  const [extractPhase, setExtractPhase] = useState('Menyiapkan dokumen…')
-  const [importing, setImporting] = useState(false)
-  const [extractSource, setExtractSource] = useState('')
-  const [extractCount, setExtractCount] = useState(10)
-  const [candidates, setCandidates] = useState<Candidate[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [filterDoc, setFilterDoc] = useState('')
+  const [filterVerified, setFilterVerified] = useState<string>('')
+  const [selectedCategory, setSelectedCategory] = useState<string>('')
 
-  usePageHeader({ eyebrow: 'REFERENCE LAYER', title: 'Glossary' })
+  // Add / Edit Modal
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [editingTerm, setEditingTerm] = useState<Partial<GlossaryTerm>>({
+    term: '',
+    definition: '',
+    source: '',
+    category: 'Umum',
+    verified: true,
+  })
+  const [savingTerm, setSavingTerm] = useState(false)
 
-  async function loadTerms(nextSearch = search, nextVerified = verifiedOnly) {
+  // Delete Confirm
+  const [deleteTarget, setDeleteTarget] = useState<GlossaryTerm | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  // AI Candidates Extraction Modal
+  const [isCandidatesModalOpen, setIsCandidatesModalOpen] = useState(false)
+  const [extractDoc, setExtractDoc] = useState('')
+  const [extractLimit, setExtractLimit] = useState(10)
+  const [candidates, setCandidates] = useState<GlossaryTerm[]>([])
+  const [loadingCandidates, setLoadingCandidates] = useState(false)
+  const [promotingAll, setPromotingAll] = useState(false)
+
+  useEffect(() => {
+    loadGlossary()
+    loadDocuments()
+  }, [search, filterDoc, filterVerified])
+
+  const loadDocuments = async () => {
+    try {
+      const res = await documentService.listDocuments()
+      setDocuments(res.documents || [])
+    } catch {
+      // ignore
+    }
+  }
+
+  const loadGlossary = async () => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({ q: nextSearch, limit: '200' })
-      if (nextVerified) params.set('verified', 'true')
-      const data = await api<{ terms: GlossaryTerm[] }>(`/api/glossary?${params.toString()}`)
-      setTerms(data.terms)
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Gagal memuat glossary.')
+      const verifiedParam = filterVerified === 'true' ? true : filterVerified === 'false' ? false : null
+      const res = await glossaryService.listGlossary(search, filterDoc || null, verifiedParam)
+      setTerms(res.terms || [])
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat daftar glossary.', 'error')
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => {
-    void loadTerms('', false)
-    // Initial load only; searches are explicit via the form.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    void api<{ documents: DocumentInfo[] }>('/documents')
-      .then((data) => setDocuments(data.documents.filter((item) => item.source)))
-      .catch(() => setDocuments([]))
-  }, [])
-
-  useEffect(() => {
-    if (!extracting) return
-    const phases = ['Membaca chunk dokumen…', 'Menyusun kandidat istilah…', 'Menunggu jawaban AI…']
-    let index = 0
-    setExtractPhase(phases[0] ?? 'Membaca chunk dokumen…')
-    const timer = window.setInterval(() => {
-      index = (index + 1) % phases.length
-      setExtractPhase(phases[index] ?? phases[0] ?? 'Membaca chunk dokumen…')
-    }, 1100)
-    return () => window.clearInterval(timer)
-  }, [extracting])
-
-  const categories = useMemo(() => [...new Set(terms.map((item) => item.category).filter(Boolean))], [terms])
-
-  function openCreate() {
-    setEditing(null)
-    setForm(EMPTY_FORM)
-    setFormOpen(true)
-  }
-
-  function openEdit(item: GlossaryTerm) {
-    setEditing(item)
-    setFormOpen(true)
-    setForm({
-      term: item.term,
-      definition: item.definition,
-      source: item.source,
-      page: item.page ? String(item.page) : '',
-      category: item.category || 'Umum',
-      verified: item.verified,
-    })
-  }
-
-  function closeForm() {
-    if (!saving) {
-      setEditing(null)
-      setFormOpen(false)
+  const handleToggleVerify = async (item: GlossaryTerm) => {
+    if (!item.id) return
+    try {
+      const res = await glossaryService.toggleVerify(item.id)
+      const newStatus = res.term?.verified ? 'Terverifikasi' : 'Draf'
+      addToast(`Status '${item.term}' diubah menjadi ${newStatus}!`, 'success')
+      setTerms((prev) =>
+        prev.map((t) => (t.id === item.id ? { ...t, verified: res.term?.verified ?? !t.verified } : t))
+      )
+    } catch (err: any) {
+      addToast(err.message || 'Gagal mengubah status verifikasi.', 'error')
     }
   }
 
-  async function extractTerms(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (extracting) return
-    setExtracting(true)
-    try {
-      const data = await api<{ candidates: Omit<Candidate, 'selected'>[] }>('/api/glossary/extract', {
-        method: 'POST',
-        body: JSON.stringify({ source: extractSource || null, n: extractCount }),
-      })
-      setCandidates(data.candidates.map((item) => ({ ...item, selected: true })))
-      toast(data.candidates.length ? `${data.candidates.length} kandidat istilah ditemukan. Review sebelum simpan.` : 'Tidak ada istilah yang cukup jelas ditemukan.')
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Gagal mengekstrak istilah.')
-    } finally {
-      setExtracting(false)
-      setExtractPhase('Menyiapkan dokumen…')
+  const handleSaveTerm = async () => {
+    if (!editingTerm.term?.trim() || !editingTerm.definition?.trim()) {
+      addToast('Istilah dan definisi wajib diisi.', 'warning')
+      return
     }
-  }
 
-  async function importCandidates() {
-    const selected = candidates.filter((item) => item.selected)
-    if (!selected.length || importing) return
-    setImporting(true)
-    let saved = 0
+    setSavingTerm(true)
     try {
-      for (const item of selected) {
-        try {
-          await api('/api/glossary', {
-            method: 'POST',
-            body: JSON.stringify({ ...item, selected: undefined, verified: false }),
-          })
-          saved += 1
-        } catch (error) {
-          // Duplicate candidates do not block the remaining imports.
-          if (!(error instanceof Error && error.message.includes('sudah ada'))) throw error
-        }
-      }
-      toast(`${saved} istilah disimpan sebagai draft. Periksa dan verifikasi sebelum digunakan.`)
-      setCandidates([])
-      setExtractOpen(false)
-      await loadTerms()
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Gagal menyimpan kandidat istilah.')
-    } finally {
-      setImporting(false)
-    }
-  }
-
-  async function saveTerm(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!form.term.trim() || !form.definition.trim() || saving) return
-    setSaving(true)
-    try {
-      const payload = {
-        term: form.term.trim(),
-        definition: form.definition.trim(),
-        source: form.source.trim() || null,
-        page: form.page.trim() ? Number(form.page) : null,
-        category: form.category.trim() || 'Umum',
-        verified: form.verified,
-      }
-      if (editing) {
-        await api(`/api/glossary/${editing.id}`, { method: 'PUT', body: JSON.stringify(payload) })
-        toast(`Istilah “${payload.term}” diperbarui.`)
+      if (editingTerm.id) {
+        await glossaryService.updateTerm(editingTerm.id, editingTerm)
+        addToast(`Istilah '${editingTerm.term}' berhasil diperbarui!`, 'success')
       } else {
-        await api('/api/glossary', { method: 'POST', body: JSON.stringify(payload) })
-        toast(`Istilah “${payload.term}” ditambahkan.`)
+        await glossaryService.createTerm(editingTerm)
+        addToast('Istilah baru berhasil disimpan!', 'success')
       }
-      setEditing(null)
-      setFormOpen(false)
-      await loadTerms()
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Gagal menyimpan istilah.')
+      setIsEditModalOpen(false)
+      loadGlossary()
+    } catch (err: any) {
+      addToast(err.message || 'Gagal menyimpan istilah.', 'error')
     } finally {
-      setSaving(false)
+      setSavingTerm(false)
     }
   }
 
-  async function removeTerm(item: GlossaryTerm) {
-    if (deleting !== null) return
-    setDeleting(item.id)
+  const handleStartExtraction = async () => {
+    setLoadingCandidates(true)
     try {
-      await api(`/api/glossary/${item.id}`, { method: 'DELETE' })
-      toast(`Istilah “${item.term}” dihapus.`)
-      await loadTerms()
-    } catch (error) {
-      toast(error instanceof Error ? error.message : 'Gagal menghapus istilah.')
+      const res = await glossaryService.getCandidates(extractDoc || null, extractLimit)
+      setCandidates(res.candidates || [])
+      if ((res.candidates || []).length === 0) {
+        addToast('Tidak ditemukan istilah baru dari dokumen ini.', 'info')
+      }
+    } catch (err: any) {
+      addToast(err.message || 'Gagal mengekstrak kandidat istilah.', 'error')
     } finally {
-      setDeleting(null)
+      setLoadingCandidates(false)
     }
   }
 
-  function update<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((current) => ({ ...current, [key]: value }))
+  const handlePromoteCandidate = async (candidate: GlossaryTerm) => {
+    try {
+      await glossaryService.createTerm({ ...candidate, verified: true })
+      addToast(`'${candidate.term}' berhasil dipromosikan ke glosarium!`, 'success')
+      setCandidates((prev) => prev.filter((c) => c.term !== candidate.term))
+      loadGlossary()
+    } catch (err: any) {
+      addToast(err.message || 'Gagal menambahkan istilah.', 'error')
+    }
   }
+
+  const handlePromoteAll = async () => {
+    if (candidates.length === 0) return
+    setPromotingAll(true)
+    let added = 0
+    for (const c of candidates) {
+      try {
+        await glossaryService.createTerm({ ...c, verified: true })
+        added++
+      } catch {
+        // skip duplicate
+      }
+    }
+    setPromotingAll(false)
+    addToast(`${added} istilah berhasil dipromosikan ke glosarium!`, 'success')
+    setCandidates([])
+    setIsCandidatesModalOpen(false)
+    loadGlossary()
+  }
+
+  const handleDeleteTerm = async () => {
+    if (!deleteTarget || !deleteTarget.id) return
+    setDeleting(true)
+    try {
+      await glossaryService.deleteTerm(deleteTarget.id)
+      addToast(`Istilah '${deleteTarget.term}' berhasil dihapus.`, 'info')
+      setDeleteTarget(null)
+      loadGlossary()
+    } catch (err: any) {
+      addToast(err.message || 'Gagal menghapus istilah.', 'error')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  // Categories list
+  const categories = Array.from(new Set(terms.map((t) => t.category || 'Umum'))).filter(Boolean)
+  const filteredTerms = terms.filter((t) => {
+    if (selectedCategory && (t.category || 'Umum') !== selectedCategory) return false
+    return true
+  })
 
   return (
-    <div className="page-content">
-      <section className="library-card glossary-intro" aria-labelledby="glossary-title">
-        <div className="section-label-row">
-          <div>
-            <p className="eyebrow">ISTILAH & DEFINISI</p>
-            <h1 id="glossary-title">Glossary dokumen</h1>
+    <div className="page-container">
+      <PageHeader
+        title="Knowledge Glossary"
+        subtitle="Kamus definisi dan istilah kunci yang terindeks langsung dari seluruh dokumen materi Anda."
+        actions={
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <Button
+              variant="secondary"
+              icon="sparkles"
+              onClick={() => {
+                setExtractDoc(filterDoc || '')
+                setIsCandidatesModalOpen(true)
+                if (candidates.length === 0) {
+                  handleStartExtraction()
+                }
+              }}
+            >
+              Ekstrak Istilah dari Dokumen
+            </Button>
+            <Button
+              variant="primary"
+              icon="plus"
+              onClick={() => {
+                setEditingTerm({ term: '', definition: '', source: filterDoc || '', category: 'Umum', verified: true })
+                setIsEditModalOpen(true)
+              }}
+            >
+              Tambah Istilah Baru
+            </Button>
           </div>
-          <span className="badge">{terms.length} istilah</span>
-        </div>
-        <p className="glossary-lead">
-          Simpan definisi yang sudah Anda pahami, lengkapi dengan sumber, lalu tandai terverifikasi agar bisa menjadi referensi belajar yang tepercaya.
-        </p>
-        <div className="glossary-toolbar">
-          <form className="glossary-search" onSubmit={(event) => { event.preventDefault(); setSearch(query); void loadTerms(query, verifiedOnly) }}>
-            <Icon name="i-search" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari istilah atau definisi…" aria-label="Cari glossary" />
-            <button className="button button-secondary" type="submit" disabled={loading}>Cari</button>
-          </form>
-          <label className="glossary-check">
-            <input type="checkbox" checked={verifiedOnly} onChange={(event) => { setVerifiedOnly(event.target.checked); void loadTerms(search, event.target.checked) }} />
-            Hanya terverifikasi
-          </label>
-          <button className="button button-primary" type="button" onClick={openCreate}>
-            <Icon name="i-plus" /> Tambah istilah
-          </button>
-          <button className="button button-secondary" type="button" onClick={() => setExtractOpen(true)}>
-            <Icon name="i-sparkles" /> Ekstrak dari dokumen
-          </button>
-        </div>
-      </section>
+        }
+      />
 
-      <section className="glossary-list" aria-live="polite">
-        {loading ? <p className="empty-list">Memuat glossary…</p> : null}
-        {!loading && terms.length === 0 ? (
-          <div className="library-card glossary-empty">
-            <Icon name="i-mark" />
-            <strong>Belum ada istilah</strong>
-            <p>Tambahkan istilah pertama dari materi Anda agar pencarian dan proses belajar lebih konsisten.</p>
-            <button className="button button-primary" type="button" onClick={openCreate}>Tambah istilah pertama</button>
-          </div>
-        ) : null}
-        {!loading && terms.map((item) => (
-          <article className="library-card glossary-item" key={item.id}>
-            <div className="glossary-item-head">
-              <div>
-                <div className="glossary-term-row">
-                  <h2>{item.term}</h2>
-                  <span className={`badge${item.verified ? ' is-success' : ''}`}>{item.verified ? 'TERVERIFIKASI' : 'DRAFT'}</span>
+      {/* Filter Row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
+        <Input
+          placeholder="Cari istilah atau isi definisi..."
+          icon="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <Select
+          value={filterDoc}
+          onChange={(e) => setFilterDoc(e.target.value)}
+          options={[
+            { value: '', label: 'Semua Sumber Dokumen' },
+            ...documents.map((d) => ({ value: d.source, label: d.source })),
+          ]}
+        />
+        <Select
+          value={filterVerified}
+          onChange={(e) => setFilterVerified(e.target.value)}
+          options={[
+            { value: '', label: 'Semua Status Verifikasi' },
+            { value: 'true', label: 'Hanya Terverifikasi' },
+            { value: 'false', label: 'Hanya Draf / Belum Verifikasi' },
+          ]}
+        />
+      </div>
+
+      {/* Category Pills Filter */}
+      {categories.length > 0 && (
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', marginRight: '0.25rem' }}>
+            Kategori:
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelectedCategory('')}
+            style={{
+              padding: '0.35rem 0.75rem',
+              borderRadius: 'var(--radius-sm)',
+              background: selectedCategory === '' ? 'var(--accent)' : 'var(--bg-surface-raised)',
+              color: selectedCategory === '' ? '#fff' : 'var(--text-secondary)',
+              border: `1px solid ${selectedCategory === '' ? 'var(--accent)' : 'var(--border-subtle)'}`,
+              fontSize: '0.8rem',
+              fontWeight: '600',
+              cursor: 'pointer',
+            }}
+          >
+            Semua ({terms.length})
+          </button>
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setSelectedCategory(cat)}
+              style={{
+                padding: '0.35rem 0.75rem',
+                borderRadius: 'var(--radius-sm)',
+                background: selectedCategory === cat ? 'var(--accent)' : 'var(--bg-surface-raised)',
+                color: selectedCategory === cat ? '#fff' : 'var(--text-secondary)',
+                border: `1px solid ${selectedCategory === cat ? 'var(--accent)' : 'var(--border-subtle)'}`,
+                fontSize: '0.8rem',
+                fontWeight: '600',
+                cursor: 'pointer',
+              }}
+            >
+              {cat} ({terms.filter((t) => (t.category || 'Umum') === cat).length})
+            </button>
+          ))}
+        </div>
+      )}
+
+      {loading ? (
+        <Card style={{ padding: '4rem', display: 'flex', justifyContent: 'center' }}>
+          <Spinner size="lg" text="Memuat istilah glosarium..." />
+        </Card>
+      ) : filteredTerms.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon="glossary"
+            title="Tidak Ada Istilah Ditemukan"
+            description="Belum ada istilah yang cocok dengan kriteria pencarian Anda. Tambah istilah secara manual atau ekstrak otomatis via AI."
+            actionLabel="Ekstrak Istilah dari Dokumen"
+            actionIcon="sparkles"
+            onAction={() => {
+              setExtractDoc(filterDoc || '')
+              setIsCandidatesModalOpen(true)
+              handleStartExtraction()
+            }}
+          />
+        </Card>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.25rem' }}>
+          {filteredTerms.map((item, idx) => (
+            <Card key={item.id || idx} padding="md" hover>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem', gap: '0.5rem' }}>
+                <div>
+                  <h4 style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--text-primary)', lineHeight: '1.3' }}>
+                    {item.term}
+                  </h4>
+                  {item.category && item.category !== 'Umum' && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--accent)', fontWeight: '600' }}>
+                      {item.category}
+                    </span>
+                  )}
                 </div>
-                <p className="glossary-definition">{item.definition}</p>
-              </div>
-              <div className="glossary-actions">
-                <button className="icon-button" type="button" aria-label={`Edit ${item.term}`} title="Edit istilah" onClick={() => openEdit(item)}><Icon name="i-edit" /></button>
-                <button className="icon-button danger" type="button" aria-label={`Hapus ${item.term}`} title="Hapus istilah" disabled={deleting === item.id} onClick={() => void removeTerm(item)}><Icon name="i-trash" /></button>
-              </div>
-            </div>
-            <div className="glossary-meta">
-              <span>{item.category}</span>
-              {item.source ? <span>{item.source}{item.page ? ` · halaman ${item.page}` : ''}</span> : <span>Sumber belum dicatat</span>}
-            </div>
-          </article>
-        ))}
-      </section>
 
-      <Dialog open={formOpen} onClose={closeForm}>
-        <div className="modal-card glossary-form-card">
-          <DialogHeading eyebrow="GLOSSARY" title={editing ? 'Edit istilah' : 'Tambah istilah'} onClose={closeForm} />
-          <form onSubmit={(event) => void saveTerm(event)}>
-            <label className="field-label">Istilah<input autoFocus value={form.term} onChange={(event) => update('term', event.target.value)} maxLength={160} required placeholder="Contoh: Retrieval-Augmented Generation" /></label>
-            <label className="field-label">Definisi<textarea value={form.definition} onChange={(event) => update('definition', event.target.value)} maxLength={3000} required placeholder="Jelaskan arti istilah dengan bahasa yang mudah dipahami…" rows={5} /></label>
-            <div className="glossary-form-grid">
-              <label className="field-label">Sumber dokumen<input value={form.source} onChange={(event) => update('source', event.target.value)} placeholder="Nama file atau URL" /></label>
-              <label className="field-label">Halaman<input type="number" min="1" value={form.page} onChange={(event) => update('page', event.target.value)} placeholder="Opsional" /></label>
-            </div>
-            <div className="glossary-form-grid">
-              <label className="field-label">Kategori<input value={form.category} onChange={(event) => update('category', event.target.value)} list="glossary-categories" /></label>
-              <label className="glossary-verify"><input type="checkbox" checked={form.verified} onChange={(event) => update('verified', event.target.checked)} /> Saya sudah memverifikasi definisi ini</label>
-            </div>
-            <datalist id="glossary-categories">{categories.map((category) => <option key={category} value={category} />)}</datalist>
-            <div className="glossary-form-actions"><button className="button button-secondary" type="button" onClick={closeForm} disabled={saving}>Batal</button><button className="button button-primary" type="submit" disabled={saving || !form.term.trim() || !form.definition.trim()}>{saving ? 'Menyimpan…' : editing ? 'Simpan perubahan' : 'Simpan istilah'}</button></div>
-          </form>
-        </div>
-      </Dialog>
+                {/* Actions: Toggle Verify, Edit, Delete */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleVerify(item)}
+                    title={item.verified ? 'Klik untuk jadikan Draf' : 'Klik untuk Verifikasi'}
+                    style={{
+                      background: item.verified ? 'var(--success-bg)' : 'var(--bg-surface-raised)',
+                      border: `1px solid ${item.verified ? 'var(--success)' : 'var(--border-default)'}`,
+                      color: item.verified ? 'var(--success)' : 'var(--text-muted)',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '0.2rem 0.5rem',
+                      fontSize: '0.72rem',
+                      fontWeight: '700',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.25rem',
+                    }}
+                  >
+                    <Icon name={item.verified ? 'check' : 'plus'} size={12} />
+                    {item.verified ? 'Terverifikasi' : 'Verifikasi'}
+                  </button>
 
-      <Dialog open={extractOpen} onClose={() => { if (!extracting && !importing) setExtractOpen(false) }}>
-        <div className="modal-card glossary-form-card glossary-extract-card">
-          <DialogHeading eyebrow="AI ASSISTED" title="Ekstrak istilah dari dokumen" onClose={() => { if (!extracting && !importing) setExtractOpen(false) }} />
-          <p className="glossary-extract-note">AI hanya mengusulkan kandidat. Kandidat akan disimpan sebagai draft dan tetap perlu Anda periksa.</p>
-          <form onSubmit={(event) => void extractTerms(event)}>
-            <label className="field-label">Dokumen sumber<select value={extractSource} onChange={(event) => setExtractSource(event.target.value)} disabled={extracting || importing}>
-              <option value="">Semua dokumen</option>
-              {documents.map((document) => <option key={document.source} value={document.source}>{document.source}</option>)}
-            </select></label>
-            <label className="field-label">Jumlah kandidat<input type="number" min="1" max="20" value={extractCount} onChange={(event) => setExtractCount(Number(event.target.value) || 1)} disabled={extracting || importing} /></label>
-            {extracting ? <div className="glossary-progress" role="status" aria-live="polite"><div className="progress-track"><div className="progress-fill is-indeterminate" /></div><div className="glossary-progress-copy"><span>{extractPhase}</span><span>Proses AI dapat membutuhkan beberapa saat</span></div></div> : null}
-            <button className="button button-primary full-width" type="submit" disabled={extracting || importing}>{extracting ? 'Menganalisis dokumen…' : 'Temukan istilah'}</button>
-          </form>
-          {candidates.length ? <div className="glossary-candidates">
-            <div className="section-label-row"><strong>Review kandidat</strong><span className="badge">{candidates.filter((item) => item.selected).length} dipilih</span></div>
-            {candidates.map((item, index) => <label className={`glossary-candidate${item.selected ? ' is-selected' : ''}`} key={`${item.term}-${index}`}>
-              <input type="checkbox" checked={item.selected} onChange={(event) => setCandidates((current) => current.map((candidate, candidateIndex) => candidateIndex === index ? { ...candidate, selected: event.target.checked } : candidate))} />
-              <span><strong>{item.term}</strong><small>{item.definition}</small><em>{item.source || extractSource || 'Sumber tidak diketahui'}{item.page ? ` · halaman ${item.page}` : ''}</em></span>
-            </label>)}
-            <button className="button button-primary full-width" type="button" onClick={() => void importCandidates()} disabled={importing || !candidates.some((item) => item.selected)}>{importing ? 'Menyimpan kandidat…' : 'Simpan kandidat terpilih sebagai draft'}</button>
-          </div> : null}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingTerm(item)
+                      setIsEditModalOpen(true)
+                    }}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '3px' }}
+                    title="Ubah Definisi"
+                  >
+                    <Icon name="edit" size={14} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTarget(item)}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '3px' }}
+                    title="Hapus Istilah"
+                  >
+                    <Icon name="trash" size={14} />
+                  </button>
+                </div>
+              </div>
+
+              <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '1rem' }}>
+                {item.definition}
+              </p>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: '0.75rem', borderTop: '1px solid var(--border-subtle)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '200px' }}>
+                  {item.source ? `📄 ${item.source}` : '🏷️ Umum'}
+                </span>
+                {item.page ? <span>Hal. {item.page}</span> : null}
+              </div>
+            </Card>
+          ))}
         </div>
-      </Dialog>
+      )}
+
+      {/* Add / Edit Modal */}
+      <Modal
+        isOpen={isEditModalOpen}
+        onClose={() => setIsEditModalOpen(false)}
+        title={editingTerm.id ? 'Ubah Istilah Glosarium' : 'Tambah Istilah Baru'}
+        subtitle="Definisikan istilah kunci dan konsep materi secara presisi."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setIsEditModalOpen(false)} disabled={savingTerm}>
+              Batal
+            </Button>
+            <Button variant="primary" icon="check" onClick={handleSaveTerm} loading={savingTerm}>
+              Simpan Istilah
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <Input
+            label="Istilah / Term"
+            placeholder="Contoh: VLAN, BGP, Latency, DNS Record"
+            value={editingTerm.term || ''}
+            onChange={(e) => setEditingTerm({ ...editingTerm, term: e.target.value })}
+          />
+
+          <div className="form-group">
+            <label className="form-label">Definisi Komprehensif</label>
+            <textarea
+              className="form-input"
+              rows={4}
+              placeholder="Tuliskan penjelasan dan definisi konsep..."
+              value={editingTerm.definition || ''}
+              onChange={(e) => setEditingTerm({ ...editingTerm, definition: e.target.value })}
+            />
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+            <Input
+              label="Kategori"
+              placeholder="Contoh: Jaringan, Cloud, Sistem"
+              value={editingTerm.category || 'Umum'}
+              onChange={(e) => setEditingTerm({ ...editingTerm, category: e.target.value })}
+            />
+            <Select
+              label="Dokumen Sumber"
+              value={editingTerm.source || ''}
+              onChange={(e) => setEditingTerm({ ...editingTerm, source: e.target.value })}
+              options={[
+                { value: '', label: 'Umum (Tanpa Dokumen Spesifik)' },
+                ...documents.map((d) => ({ value: d.source, label: d.source })),
+              ]}
+            />
+          </div>
+        </div>
+      </Modal>
+
+      {/* AI Extraction Modal */}
+      <Modal
+        isOpen={isCandidatesModalOpen}
+        onClose={() => setIsCandidatesModalOpen(false)}
+        title="Ekstrak Istilah dari Dokumen (AI)"
+        subtitle="AI akan membaca isi dokumen dan mengekstrak istilah teknis penting secara otomatis."
+        maxWidth="lg"
+        footer={
+          candidates.length > 0 ? (
+            <>
+              <Button variant="ghost" onClick={() => setIsCandidatesModalOpen(false)}>
+                Tutup
+              </Button>
+              <Button
+                variant="primary"
+                icon="check"
+                onClick={handlePromoteAll}
+                loading={promotingAll}
+              >
+                Promosikan Semua ({candidates.length})
+              </Button>
+            </>
+          ) : undefined
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* Controls Bar */}
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr auto', gap: '0.75rem', alignItems: 'flex-end', background: 'var(--bg-surface-raised)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+            <Select
+              label="Pilih Dokumen Sumber"
+              value={extractDoc}
+              onChange={(e) => setExtractDoc(e.target.value)}
+              options={[
+                { value: '', label: 'Semua Dokumen Terindeks' },
+                ...documents.map((d) => ({ value: d.source, label: d.source })),
+              ]}
+            />
+            <Select
+              label="Jumlah Istilah"
+              value={String(extractLimit)}
+              onChange={(e) => setExtractLimit(Number(e.target.value))}
+              options={[
+                { value: '5', label: '5 Istilah' },
+                { value: '10', label: '10 Istilah' },
+                { value: '15', label: '15 Istilah' },
+                { value: '20', label: '20 Istilah' },
+              ]}
+            />
+            <Button
+              variant="primary"
+              icon="sparkles"
+              onClick={handleStartExtraction}
+              loading={loadingCandidates}
+            >
+              Ekstrak AI
+            </Button>
+          </div>
+
+          {/* Results Area */}
+          {loadingCandidates ? (
+            <div style={{ padding: '3.5rem', display: 'flex', justifyContent: 'center' }}>
+              <Spinner size="lg" text="Menganalisis dokumen dan mengekstrak istilah penting..." />
+            </div>
+          ) : candidates.length === 0 ? (
+            <EmptyState
+              icon="sparkles"
+              title="Siap Mengekstrak Istilah"
+              description="Pilih dokumen di atas dan klik 'Ekstrak AI' untuk menemukan definisi konsep kunci dari materi Anda."
+            />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '420px', overflowY: 'auto', paddingRight: '0.25rem' }}>
+              {candidates.map((c, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '1rem',
+                    padding: '1rem',
+                    borderRadius: 'var(--radius-md)',
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                  }}
+                >
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                      <span style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)' }}>
+                        {c.term}
+                      </span>
+                      <Badge variant="secondary" size="sm">
+                        {c.source || 'Dokumen'}
+                      </Badge>
+                      {c.page ? <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Hal. {c.page}</span> : null}
+                    </div>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                      {c.definition}
+                    </p>
+                  </div>
+                  <Button variant="secondary" size="sm" icon="plus" onClick={() => handlePromoteCandidate(c)}>
+                    Promosikan
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Delete Confirmation */}
+      <ConfirmDialog
+        isOpen={!!deleteTarget}
+        title="Hapus Istilah Glosarium"
+        description={`Apakah Anda yakin ingin menghapus istilah '${deleteTarget?.term}' dari kamus?`}
+        confirmText="Hapus Istilah"
+        variant="danger"
+        loading={deleting}
+        onConfirm={handleDeleteTerm}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   )
 }

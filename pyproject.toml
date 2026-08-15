@@ -1,12 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "rag-projects"
-version = "2.1.0"
+name = "personal-ai-knowledge-base"
+version = "3.0.0"
+description = "Production-grade Personal AI Knowledge Base & RAG System with Clean Architecture"
+readme = "README.md"
 requires-python = ">=3.11"
-description = "Personal AI Knowledge Base (RAG)"
+license = { text = "MIT" }
+authors = [{ name = "Knowledge Base Team" }]
+keywords = ["rag", "llm", "knowledge-base", "chromadb", "fastapi", "react", "spaced-repetition"]
+
+[project.scripts]
+cortex = "cortex:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --basetemp=.pytest-tmp"
 
 [tool.ruff]
 line-length = 88
@@ -16,7 +27,5 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["E501"]
 
-# E402 disengaja di test: env PERSIST_DIR/UPLOAD_DIR/DB_PATH di-set SEBELUM
-# import app.main (lihat konvensi tests/).
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["E402"]

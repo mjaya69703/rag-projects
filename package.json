@@ -1,9 +1,12 @@
 {
-  "name": "rag-projects",
-  "version": "2.1.0",
+  "name": "personal-ai-knowledge-base",
+  "version": "3.0.0",
   "private": true,
+  "description": "Personal AI Knowledge Base & RAG System",
   "scripts": {
-    "dev": "python run_dev.py",
-    "start": "start.cmd"
+    "dev": "python cortex serve",
+    "start": "start.cmd",
+    "build": "cd frontend && bun run build",
+    "test": "python cortex test"
   }
 }

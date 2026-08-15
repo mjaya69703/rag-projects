@@ -15,7 +15,12 @@ const Settings = lazy(() => import('./pages/Settings'))
 const Glossary = lazy(() => import('./pages/Glossary'))
 
 function Fallback() {
-  return <p className="empty-list" style={{ padding: '2rem' }}>Memuat…</p>
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: 'var(--bg-app)', color: 'var(--text-muted)' }}>
+      <div className="spinner-circle" style={{ marginRight: '0.75rem' }} />
+      <span style={{ fontSize: '0.88rem', fontWeight: '500' }}>Memuat Studio...</span>
+    </div>
+  )
 }
 
 export default function App() {

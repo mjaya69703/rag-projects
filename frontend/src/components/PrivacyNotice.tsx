@@ -1,90 +1,86 @@
-import { useEffect, useState } from 'react'
-import type { PrivacyInfo } from '../api'
-import { Dialog, DialogHeading } from './Dialog'
+import React, { useEffect, useState } from 'react'
+import { Badge, Button, Icon, Modal } from '../shared/components'
+import type { PrivacyInfo } from '../shared/types'
 
-const ACK_KEY = 'privacy_ack_v1'
-const FETCH_TIMEOUT_MS = 4_000
+const ACK_KEY = 'privacy_ack_v2'
 
-const FALLBACK_DISCLOSURE =
-  'Aplikasi ini memproses dokumen dan pertanyaan Anda untuk keperluan RAG. Dokumen yang diunggah menjadi basis pengetahuan lokal Anda dan dipakai hanya untuk menjawab pertanyaan. Data tidak dibagikan ke pihak ketiga, kecuali saat fitur yang memakai layanan LLM eksternal diaktifkan — detailnya dijelaskan di halaman Settings.'
-
-/**
- * Pemberitahuan privasi sekali-muat: muncul saat app pertama kali dibuka,
- * teks diambil dari GET /privacy/info (fallback statis jika backend offline),
- * dan tidak muncul lagi setelah dikonfirmasi (persist di localStorage).
- */
 export function PrivacyNotice() {
   const [info, setInfo] = useState<PrivacyInfo | null>(null)
-  const [ready, setReady] = useState(false)
   const [open, setOpen] = useState(false)
 
   useEffect(() => {
     if (localStorage.getItem(ACK_KEY)) return
-    let cancelled = false
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+
     void (async () => {
       try {
-        const res = await fetch('/privacy/info', { signal: controller.signal })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const data = (await res.json()) as PrivacyInfo
-        if (!cancelled && data && typeof data.disclosure_text === 'string' && data.disclosure_text.trim()) {
+        const res = await fetch('/privacy/info')
+        if (res.ok) {
+          const data = (await res.json()) as PrivacyInfo
           setInfo(data)
         }
       } catch {
-        // Backend offline / endpoint belum tersedia → pakai fallback statis.
+        // ignore
       } finally {
-        clearTimeout(timer)
-        if (!cancelled) {
-          setReady(true)
-          setOpen(true)
-        }
+        setOpen(true)
       }
     })()
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-      controller.abort()
-    }
   }, [])
 
-  if (!ready) return null
-
-  function acknowledge() {
+  const handleAcknowledge = () => {
     localStorage.setItem(ACK_KEY, '1')
     setOpen(false)
   }
 
+  if (!open) return null
+
   return (
-    <Dialog open={open} onClose={acknowledge}>
-      <div className="modal-card privacy-notice">
-        <DialogHeading eyebrow="PRIVASI & DATA" title="Pemberitahuan Privasi" onClose={acknowledge} />
-        <p className="privacy-body">{info?.disclosure_text || FALLBACK_DISCLOSURE}</p>
-        {info ? (
-          <>
-            <div className="privacy-facts">
-              <div className="privacy-fact">
-                <strong>PENYEDIA AI</strong>
-                <span>{info.provider_label || '—'}</span>
-              </div>
-              <div className="privacy-fact">
-                <strong>REDAKSI SENSITIF</strong>
-                <span>{info.redaction_enabled ? 'Aktif' : 'Nonaktif'}</span>
-              </div>
-              <div className="privacy-fact">
-                <strong>RETENSI DATA</strong>
-                <span>{info.retention_days ? `${info.retention_days} hari` : '—'}</span>
-              </div>
+    <Modal
+      isOpen={open}
+      onClose={handleAcknowledge}
+      title="Pemberitahuan Privasi & Alur Data"
+      subtitle="Transparansi pemrosesan dokumen dan interaksi model AI lokal/eksternal."
+      size="md"
+      footer={
+        <Button variant="primary" icon="check" onClick={handleAcknowledge}>
+          Saya Mengerti & Setuju
+        </Button>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+          {info?.disclosure_text ||
+            'Aplikasi ini memproses dokumen dan pertanyaan Anda untuk keperluan RAG. Seluruh dokumen tersimpan secara lokal dalam database dan vector store di mesin Anda.'}
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem' }}>
+          <div style={{ padding: '0.75rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              LLM Provider
             </div>
-            {info.external_data_flow ? <p className="privacy-flow">{info.external_data_flow}</p> : null}
-          </>
-        ) : null}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--space-4)' }}>
-          <button className="button button-primary" type="button" onClick={acknowledge}>
-            Saya Mengerti
-          </button>
+            <div style={{ fontSize: '0.88rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.2rem' }}>
+              {info?.provider_label || 'Lokal / External'}
+            </div>
+          </div>
+
+          <div style={{ padding: '0.75rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              Sensor PII
+            </div>
+            <div style={{ fontSize: '0.88rem', fontWeight: '700', color: info?.redaction_active ? 'var(--success)' : 'var(--warning)', marginTop: '0.2rem' }}>
+              {info?.redaction_active ? '🛡️ Aktif' : '⚠️ Nonaktif'}
+            </div>
+          </div>
+
+          <div style={{ padding: '0.75rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+            <div style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+              Retensi Chat
+            </div>
+            <div style={{ fontSize: '0.88rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.2rem' }}>
+              {info?.retention_days ? `${info.retention_days} Hari` : 'Tanpa Batas'}
+            </div>
+          </div>
         </div>
       </div>
-    </Dialog>
+    </Modal>
   )
 }
