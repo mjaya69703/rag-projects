@@ -7,10 +7,12 @@ import {
   Icon,
   Input,
   PageHeader,
+  Select,
   Spinner,
   StatCard,
 } from '../shared/components'
 import { usePWA } from '../context/PWAContext'
+import { usePush } from '../context/PushContext'
 import { useTheme, useToast } from '../shared/hooks'
 import { learningService, systemService } from '../shared/services'
 import type { PrivacyInfo } from '../shared/types'
@@ -19,6 +21,7 @@ export default function Settings() {
   const { theme, toggleTheme, isDark } = useTheme()
   const { addToast } = useToast()
   const { isInstallable, isInstalled, isIOS, promptInstall } = usePWA()
+  const push = usePush()
   const [privacyInfo, setPrivacyInfo] = useState<PrivacyInfo | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -237,6 +240,81 @@ export default function Settings() {
                   {privacyInfo?.cache_max_days ? `${privacyInfo.cache_max_days} Hari` : 'Tanpa Batas'}
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Web Push Notifications */}
+      <Card padding="lg">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+          <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-sm)', background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="bell" size={20} />
+          </div>
+          <div>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>Notifikasi Web Push</h3>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Reminder belajar langsung ke perangkat Anda</p>
+          </div>
+        </div>
+
+        {!push.supported ? (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', padding: '0.85rem 1rem', borderRadius: 'var(--radius-md)', background: 'var(--warning-bg)', border: '1px solid var(--warning)', color: 'var(--warning)', fontSize: '0.85rem' }}>
+            <Icon name="alert" size={18} />
+            <span>Notifikasi web push membutuhkan koneksi <strong>HTTPS</strong> (atau localhost). Akses aplikasi via HTTPS — misal reverse proxy Caddy/nginx — agar fitur ini aktif.</span>
+          </div>
+        ) : push.isSubscribed ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+              <Badge variant="success" icon="check" dot>Aktif — notifikasi akan dikirim ke browser ini</Badge>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <Button variant="secondary" size="sm" icon="send" onClick={push.sendTest} loading={push.loading}>
+                  Kirim Tes
+                </Button>
+                <Button variant="danger" size="sm" icon="bell" onClick={push.disable} loading={push.loading}>
+                  Matikan
+                </Button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                <input
+                  type="checkbox"
+                  checked={push.remindDue}
+                  onChange={(e) => push.setRemindDue(e.target.checked)}
+                  style={{ accentColor: 'var(--accent)', width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                Pengingat Harian Cerdas (Flashcards SM-2, Titik Lemah, & Streak Guard)
+              </label>
+
+              {push.remindDue && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Kirim setiap hari pukul</span>
+                  <Select
+                    value={String(push.remindHour)}
+                    onChange={(e) => push.setRemindHour(Number(e.target.value))}
+                    options={Array.from({ length: 24 }, (_, h) => ({ value: String(h), label: `${String(h).padStart(2, '0')}:00` }))}
+                  />
+                </div>
+              )}
+
+              <div style={{ background: 'var(--bg-surface-raised)', padding: '0.85rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 220px), 1fr))', gap: '0.6rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                <div>✨ <strong>Kartu SM-2 Due:</strong> Review flashcards jatuh tempo</div>
+                <div>💡 <strong>Weak-Spot Drill:</strong> Latihan materi yang sering salah</div>
+                <div>🔥 <strong>Streak Guard:</strong> Peringatan saat 2+ hari tidak aktif</div>
+                <div>📁 <strong>Ingest & Watch-Folder:</strong> Alert instan dokumen selesai diindeks</div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+              Aktifkan untuk menerima notifikasi cerdas: pengingat flashcard SM-2 harian, latihan titik lemah, penjaga streak belajar, serta notifikasi instan saat dokumen/watch-folder selesai diindeks.
+            </p>
+            <div>
+              <Button variant="primary" icon="bell" onClick={push.enable} loading={push.loading}>
+                Aktifkan Notifikasi
+              </Button>
             </div>
           </div>
         )}

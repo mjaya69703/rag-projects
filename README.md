@@ -32,19 +32,30 @@
 - **Automated Watch-Folder**: Cukup drop file ke folder `uploads/`, sistem otomatis mengindeksnya di latar belakang.
 - **Checksum Deduplication**: Menghindari indeks duplikat dan mendukung penggantian dokumen secara atomik.
 
-### 🎓 3. Active Learning Ecosystem
+### 🎓 3. Active Learning & Notification Ecosystem
 - **🎴 3D Spaced Repetition Flashcards**: Antarmuka 3D kartu flip interaktif dengan algoritma penjadwalan memori **SM-2** (*SuperMemo-2*).
 - **🎯 AI Quiz Arena**: Pembuat kuis pilihan ganda otomatis dengan sistem penilaian deterministik di server dan ringkasan akurasi.
 - **📚 Knowledge Glossary**: Kamus istilah penting dengan fitur 1-klik ekstraksi konsep kunci via AI.
 - **📊 Weak-Spots Diagnostics**: Analisis mendalam topik-topik yang sering salah atau lupa beserta radar penguasaan materi (*Mastery Radar*).
+- **🔔 Intelligent Web Push Notifications**: Notifikasi pengingat belajar berbasis browser (PWA & Desktop):
+  - *Kartu SM-2 Due*: Pengingat harian kartu flashcard jatuh tempo di jam pilihan pengguna.
+  - *Weak-Spot Drill*: Latihan terfokus untuk materi dengan akurasi rendah.
+  - *Streak Guard*: Peringatan penjaga kebiasaan belajar jika tidak aktif >= 2 hari.
+  - *Ingest & Watch-Folder Alerts*: Notifikasi instan saat dokumen/URL selesai diindeks.
+  - *Concept Mastery Challenge*: Tantangan kuis kilat untuk konsep yang sering ditanyakan.
 
-### 🛡️ 4. Privasi & Database Migrations
+### 📱 4. Progressive Web App (PWA) & Mobile-Friendly
+- **Standalone App Experience**: Dapat diinstal langsung di Android, iOS (Home Screen), dan Desktop via tombol *Install App*.
+- **Mobile Glassmorphic Navigation**: Bilah navigasi bawah 5-tab + off-canvas sidebar drawer dengan animasi halus.
+- **Full Offline Caching**: Dukungan Service Worker untuk pre-caching app shell dan Stale-While-Revalidate aset statis.
+
+### 🛡️ 5. Privasi & Database Migrations
 - **Laravel-style Migrations & Seeders**: Migrasi database terstruktur (`cortex migrate`, `cortex migrate:fresh`, `cortex db:seed`).
 - **Local-First Storage**: Dokumen dan riwayat chat tersimpan lokal di mesin Anda (SQLite + ChromaDB).
 - **PII Auto-Redaction**: Sensor otomatis email, nomor telepon, dan pola kredensial sebelum dikirim ke penyedia LLM.
 - **1-Click Data Purge**: Kemampuan membersihkan seluruh riwayat chat, kuis, dan semantic cache kapan saja.
 
-### 🔌 5. Integrasi Eksternal
+### 🔌 6. Integrasi Eksternal
 - **Model Context Protocol (MCP)**: Server FastMCP bawaan untuk dihubungkan langsung dengan Cursor, Claude Desktop, atau Antigravity.
 - **Telegram Bot**: Asisten pengetahuan pribadi yang siap menjawab pertanyaan lewat pesan Telegram.
 
@@ -203,8 +214,26 @@ rag-projects/
 | `CHROMA_PERSIST_DIR` | `./data/chroma` | Lokasi penyimpanan vector store |
 | `DB_PATH` | `./data/chat.db` | Lokasi database SQLite |
 | `REDACTION_ENABLED` | `true` | Sensor otomatis PII (email/telepon) sebelum ke LLM |
-| `RETAIN_CHAT_DAYS` | `30` | Hapus chat yang tidak diakses lebih dari N hari (0 = selamanya) |
-| `AUTH_API_TOKEN` | — | Kunci otentikasi Bearer opsional |
+| `VAPID_SUBJECT` | `mailto:admin@cortex.local` | Identitas pengirim Web Push Notification |
+| `VAPID_PRIVATE_KEY` | *(Auto-generated)* | Kunci privat VAPID (otomatis disimpan di `data/vapid_private.pem`) |
+| `VAPID_PUBLIC_KEY` | *(Auto-generated)* | Kunci publik VAPID Base64URL |
+
+### 🔑 Generate Kunci VAPID Manual (Opsional)
+
+Kunci VAPID digenerate secara otomatis pada saat pertama kali start. Jika ingin membuat keypair sendiri secara manual:
+
+- **Windows (PowerShell / Command Prompt)**:
+  ```powershell
+  .venv\Scripts\python -c "from py_vapid import Vapid, b64urlencode; from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat; v=Vapid(); v.generate_keys(); print('PRIV:\n' + v.private_pem().decode()); print('PUB:\n' + b64urlencode(v.public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)))"
+  ```
+- **Linux / macOS / WSL**:
+  ```bash
+  python3 -c "from py_vapid import Vapid, b64urlencode; from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat; v=Vapid(); v.generate_keys(); print('PRIV:\n' + v.private_pem().decode()); print('PUB:\n' + b64urlencode(v.public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)))"
+  ```
+- **Docker**:
+  ```bash
+  docker compose run --rm app python -c "from py_vapid import Vapid, b64urlencode; from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat; v=Vapid(); v.generate_keys(); print('PRIV:\n' + v.private_pem().decode()); print('PUB:\n' + b64urlencode(v.public_key.public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)))"
+  ```
 
 ---
 

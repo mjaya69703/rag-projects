@@ -4,6 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 import './styles/tokens.css'
 import './styles/styles.css'
 import App from './App'
+import { PushProvider } from './context/PushContext'
 import { ToastProvider } from './shared/hooks'
 
 // Theme: inisialisasi sebelum render (sesuai localStorage)
@@ -15,7 +16,9 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <ToastProvider>
-        <App />
+        <PushProvider>
+          <App />
+        </PushProvider>
       </ToastProvider>
     </BrowserRouter>
   </StrictMode>,

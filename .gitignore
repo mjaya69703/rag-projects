@@ -8,6 +8,7 @@ venv/
 .pytest-tmp/
 .ruff_cache/
 graphify-out/
+app/static/assets/
 
 
 # ====== Env & secrets (REPO INI OPEN SOURCE — jangan pernah commit) ======
@@ -35,5 +36,8 @@ desktop.ini
 
 # ====== Tools & artifacts ======
 *.tmp
+*.data
+encrypted.data
 .hallmark/
 nul
+

@@ -8,7 +8,7 @@ services:
     container_name: cortex_knowledge_base
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${APP_PORT}:8000"
     # Variabel yang diteruskan ke container = persis yang dibaca code
     # (app/config.py & app/llm_client.py). Nilai diambil dari file .env
     # di direktori yang sama dengan docker-compose.yml.
@@ -30,6 +30,10 @@ services:
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
       # Kualitas retrieval: reranker cross-encoder (0 = matikan)
       - RERANK_ENABLED=${RERANK_ENABLED:-true}
+      # Web push notification (reminder belajar)
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:admin@cortex.local}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
       # Integrasi eksternal (opsional)
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
     volumes:

@@ -12,7 +12,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '^/(documents|deleted-documents|upload|ingest-url|query|sessions|repeated-questions|learning|locations|annotations|health|metrics|privacy)':
+      '^/(documents|deleted-documents|upload|ingest-url|query|sessions|repeated-questions|learning|locations|annotations|health|metrics|privacy|push)':
         {
           target: 'http://127.0.0.1:8000',
           changeOrigin: true,

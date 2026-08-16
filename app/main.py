@@ -52,6 +52,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import (
@@ -69,7 +70,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
-from app import annotations, db, glossary, learning
+from app import annotations, db, glossary, learning, push
 from app.config import (
     CORS_ORIGINS,
     MAX_UPLOAD_MB,
@@ -105,6 +106,9 @@ RATE_LIMIT_PATHS = {"/query", "/query/stream", "/upload", "/ingest-url"}
 
 # Watch-folder: interval scan dokumen baru di upload_dir (detik).
 WATCH_FOLDER_INTERVAL_SEC = 30
+
+# Push reminder: interval cek jam pengingat kartu due (detik).
+PUSH_REMINDER_INTERVAL_SEC = 1800
 
 # Serialisasi job ingestion (upload/URL) vs watch-folder vs update kategori.
 # Aplikasi ini single-process (uvicorn workers=1); lock ini melengkapi
@@ -194,10 +198,14 @@ async def lifespan(app: FastAPI):
     # Watch-folder: index otomatis file baru yang di-drop ke upload_dir.
     watch_task = asyncio.create_task(_watch_folder_loop(settings, store))
     app.state.watch_task = watch_task
+    # Push reminder: kirim notifikasi kartu due sesuai jam pengingat.
+    push_task = asyncio.create_task(_push_reminder_loop(settings))
+    app.state.push_task = push_task
     try:
         yield
     finally:
         watch_task.cancel()
+        push_task.cancel()
         store.close()
 
 
@@ -282,6 +290,24 @@ class FlashcardAnswerRequest(BaseModel):
     heading: str = Field(..., min_length=1, max_length=300)
     source: str = Field(..., max_length=300)
     known: bool
+
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str = Field(..., min_length=5, max_length=2000)
+    keys: dict = Field(..., description='{"p256dh": "...", "auth": "..."}')
+    user_agent: str | None = Field(default=None, max_length=500)
+    remind_due: bool = False
+    remind_hour: int = Field(default=7, ge=0, le=23)
+
+
+class PushPreferencesRequest(BaseModel):
+    endpoint: str = Field(..., min_length=5, max_length=2000)
+    remind_due: bool | None = None
+    remind_hour: int | None = Field(default=None, ge=0, le=23)
+
+
+class PushTestRequest(BaseModel):
+    endpoint: str = Field(..., min_length=5, max_length=2000)
 
 
 def _index_chunks(
@@ -390,6 +416,15 @@ def _ingest_file_job(
         metrics["total"] += 1
         metrics["ready"] += 1
         logger.info("ingest: %s (%s) terindeks (%d chunk)", source, kind, n)
+        try:
+            push.notify_all(
+                settings.db_path,
+                title="📄 Dokumen Selesai Diindeks",
+                body=f"'{Path(source).name}' siap ditanyakan ({n} chunk).",
+                url="/library",
+            )
+        except Exception:
+            pass
     except Exception as exc:
         logger.exception("ingest gagal: %s", source)
         db.update_document_status(
@@ -430,6 +465,15 @@ def _ingest_url_job(
         metrics["total"] += 1
         metrics["ready"] += 1
         logger.info("ingest-url: %s terindeks (%d chunk)", source, n)
+        try:
+            push.notify_all(
+                settings.db_path,
+                title="🌐 URL Selesai Diindeks",
+                body=f"'{source}' siap ditanyakan ({n} chunk).",
+                url="/library",
+            )
+        except Exception:
+            pass
     except Exception as exc:
         logger.exception("ingest-url gagal: %s", url)
         db.update_document_status(
@@ -460,10 +504,55 @@ def _watch_folder_loop(settings: Settings, store: VectorStore) -> None:
                         continue
                     _index_chunks(settings, store, source, cat, chunks)
                     logger.info("watch-folder: %s (%s) terindeks (%d chunk)", source, cat, len(chunks))
+                    try:
+                        push.notify_all(
+                            settings.db_path,
+                            title="📁 Dokumen Baru dari Watch-Folder",
+                            body=f"'{source}' otomatis diindeks ({len(chunks)} chunk).",
+                            url="/library",
+                        )
+                    except Exception:
+                        pass
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("watch-folder: error saat scan")
+
+    return loop()
+
+
+def _push_reminder_loop(settings: Settings) -> None:
+    """Loop asinkron: kirim reminder belajar cerdas via web push (harian).
+
+    Untuk tiap subscription dengan remind_due aktif, jika jam sekarang ==
+    remind_hour dan belum dikirim hari ini → kirim notifikasi harian
+    terbaik (due cards / weak spots / streak / daily challenge). Cek tiap 30 menit.
+    """
+    import asyncio
+
+    async def loop() -> None:
+        while True:
+            try:
+                await asyncio.sleep(PUSH_REMINDER_INTERVAL_SEC)
+                now = datetime.now()
+                for sub in push.list_subscriptions(settings.db_path):
+                    if not sub.get("remind_due"):
+                        continue
+                    if now.hour != int(sub.get("remind_hour") or 7):
+                        continue
+                    today = now.strftime("%Y-%m-%d")
+                    if sub.get("last_due_sent") == today:
+                        continue
+                    payload = push.smart_daily_reminder_payload(settings.db_path)
+                    if payload is None:
+                        continue
+                    if push.send_notification(settings.db_path, sub, **payload):
+                        push.mark_due_sent(settings.db_path, sub["endpoint"], today)
+                        logger.info("push reminder dikirim ke %s: %s", sub["endpoint"], payload.get("title"))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("push reminder: error saat loop")
 
     return loop()
 
@@ -739,6 +828,74 @@ def privacy_clear_cache() -> dict:
 
     n = SemanticCache(store).clear()
     return {"status": "ok", "cleared_entries": n}
+
+
+# ----------------------------------------------------------------------
+# Web Push Notification (reminder belajar)
+# ----------------------------------------------------------------------
+@app.get("/push/vapid-public-key")
+def push_vapid_public_key() -> dict:
+    """Kunci publik VAPID untuk subscribe dari browser."""
+    settings: Settings = app.state.settings
+    _priv, pub, subject = push.vapid_keys(Path(settings.db_path).parent)
+    return {
+        "status": "ok",
+        "public_key": pub,
+        "subject": subject,
+    }
+
+
+@app.post("/push/subscribe")
+def push_subscribe(req: PushSubscribeRequest) -> dict:
+    """Simpan subscription browser untuk web push (reminder belajar)."""
+    settings: Settings = app.state.settings
+    keys = req.keys or {}
+    sub = push.save_subscription(
+        settings.db_path,
+        endpoint=req.endpoint,
+        p256dh=keys.get("p256dh", ""),
+        auth=keys.get("auth", ""),
+        user_agent=req.user_agent or "",
+        remind_due=req.remind_due,
+        remind_hour=req.remind_hour,
+    )
+    return {"status": "ok", "subscription": sub}
+
+
+@app.delete("/push/subscribe")
+def push_unsubscribe(req: PushTestRequest) -> dict:
+    """Hapus subscription (opt-out notifikasi)."""
+    settings: Settings = app.state.settings
+    removed = push.unsubscribe(settings.db_path, req.endpoint)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Subscription tidak ditemukan.")
+    return {"status": "ok", "removed": removed}
+
+
+@app.post("/push/preferences")
+def push_preferences(req: PushPreferencesRequest) -> dict:
+    """Ubah preferensi reminder (due cards + jam pengingat)."""
+    settings: Settings = app.state.settings
+    sub = push.update_preferences(
+        settings.db_path,
+        req.endpoint,
+        remind_due=req.remind_due,
+        remind_hour=req.remind_hour,
+    )
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Subscription tidak ditemukan.")
+    return {"status": "ok", "subscription": sub}
+
+
+@app.post("/push/test")
+def push_test(req: PushTestRequest) -> dict:
+    """Kirim notifikasi uji ke subscription (validasi wiring)."""
+    settings: Settings = app.state.settings
+    sub = push.get_subscription(settings.db_path, req.endpoint)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Subscription tidak ditemukan.")
+    ok = push.send_test(settings.db_path, sub)
+    return {"status": "ok", "sent": ok}
 
 
 @app.get("/repeated-questions")

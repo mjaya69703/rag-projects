@@ -27,6 +27,9 @@ httpx==0.28.1
 mcp==1.29.0
 python-telegram-bot==22.8
 
+# Web Push Notification (reminder belajar via browser push service)
+pywebpush==2.0.1
+
 # Testing
 pytest==9.1.1
 

@@ -47,7 +47,7 @@ self.addEventListener('fetch', (event) => {
     '/documents', '/deleted-documents', '/upload', '/ingest-url',
     '/query', '/sessions', '/repeated-questions', '/learning',
     '/locations', '/annotations', '/health', '/metrics', '/privacy',
-    '/api/', '/jobs', '/audit'
+    '/push', '/api/', '/jobs', '/audit'
   ];
   if (apiPrefixes.some((prefix) => url.pathname.startsWith(prefix))) {
     return;
@@ -125,3 +125,43 @@ self.addEventListener('message', (event) => {
     self.skipWaiting();
   }
 });
+
+// ===== Web Push Notification (reminder belajar) =====
+self.addEventListener('push', (event) => {
+  let data = { title: 'Cortex AI', body: '', url: '/' };
+  try {
+    const parsed = event.data ? event.data.json() : {}
+    data = {
+      title: parsed.title || data.title,
+      body: parsed.body || '',
+      url: parsed.url || '/',
+    }
+  } catch (e) {
+    // payload bukan JSON — pakai default
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: '/pwa-icon.svg',
+      badge: '/pwa-icon.svg',
+      data: { url: data.url },
+      vibrate: [100, 50, 100],
+    })
+  )
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const targetUrl = (event.notification.data && event.notification.data.url) || '/'
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client && client.visibilityState === 'visible') {
+          client.navigate(targetUrl)
+          return client.focus()
+        }
+      }
+      return self.clients.openWindow(targetUrl)
+    })
+  )
+})
