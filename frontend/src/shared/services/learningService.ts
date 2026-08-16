@@ -73,14 +73,14 @@ export const learningService = {
   },
 
   // Quizzes
-  async generateQuiz(source?: string | null, n = 5): Promise<{ status: string } & QuizAttempt> {
+  async generateQuiz(source?: string | null, n = 5, topic?: string | null): Promise<{ status: string } & QuizAttempt> {
     return request('/learning/quiz/generate', {
       method: 'POST',
-      body: JSON.stringify({ source, n }),
+      body: JSON.stringify({ source, n, topic: topic || null }),
     })
   },
 
-  async gradeQuiz(attemptId: string, answers: number[]): Promise<{ status: string } & QuizGradeResult> {
+  async gradeQuiz(attemptId: string, answers: number[]): Promise<{ status: string; saved_cards: ReviewCard[] } & QuizGradeResult> {
     return request('/learning/quiz/grade', {
       method: 'POST',
       body: JSON.stringify({ attempt_id: attemptId, answers }),
@@ -133,5 +133,10 @@ export const learningService = {
     weak_spots: WeakSpot[]
   }> {
     return request('/learning/recommendations')
+  },
+
+  // Export data belajar (backup portabel)
+  async exportLearningData(): Promise<{ status: string; exported_at: string; [key: string]: any }> {
+    return request('/learning/export')
   },
 }

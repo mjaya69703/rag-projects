@@ -569,31 +569,47 @@ def document_progress(
 # #4 Quiz generator + skor
 # ----------------------------------------------------------------------
 def generate_quiz(
-    engine: Any, source: str | None = None, n: int = 5
+    engine: Any, source: str | None = None, n: int = 5, topic: str | None = None
 ) -> list[dict]:
     """Buat soal pilihan ganda dari chunk dokumen via LLM.
 
-    Chunk diambil langsung dari ``store.collection.get`` (tanpa
-    embedding), maks. satu chunk per heading. LLM diminta JSON array
-    soal; kalau parsing gagal, fallback satu soal sederhana dari heading.
+    Sumber chunk:
+    - ``topic`` diberikan → cari chunk relevan via hybrid search (fokus
+      topik/weak-spot), opsional dibatasi ``source``.
+    - tanpa topic → ambil langsung dari collection (maks. satu chunk per
+      heading).
+    LLM diminta JSON array soal; kalau parsing gagal, fallback satu soal
+    sederhana dari heading.
     """
     where = {"source": source} if source else None
-    result = engine.store.collection.get(
-        where=where, limit=n * 2, include=["documents", "metadatas"]
-    )
-    documents = result.get("documents") or []
-    metadatas = result.get("metadatas") or []
-
     chosen: list[dict] = []
     seen_headings: set[str] = set()
-    for doc, meta in zip(documents, metadatas, strict=True):
-        heading = (meta or {}).get("heading") or "Intro"
-        if heading in seen_headings:
-            continue
-        seen_headings.add(heading)
-        chosen.append({"text": doc, "heading": heading})
-        if len(chosen) >= n:
-            break
+
+    if topic:
+        results = engine.store.search(topic, top_k=max(n * 2, 10), where=where)
+        for r in results:
+            meta = r.get("metadata") or {}
+            heading = meta.get("heading") or "Intro"
+            if heading in seen_headings:
+                continue
+            seen_headings.add(heading)
+            chosen.append({"text": r.get("text", ""), "heading": heading})
+            if len(chosen) >= n:
+                break
+    else:
+        result = engine.store.collection.get(
+            where=where, limit=n * 2, include=["documents", "metadatas"]
+        )
+        documents = result.get("documents") or []
+        metadatas = result.get("metadatas") or []
+        for doc, meta in zip(documents, metadatas, strict=True):
+            heading = (meta or {}).get("heading") or "Intro"
+            if heading in seen_headings:
+                continue
+            seen_headings.add(heading)
+            chosen.append({"text": doc, "heading": heading})
+            if len(chosen) >= n:
+                break
     if not chosen:
         return []
 
@@ -1309,12 +1325,24 @@ def generate_flashcards(
 
 
 def save_flashcards_to_deck(
-    db_path: str | Path, cards: list[dict]
+    db_path: str | Path, cards: list[dict], dedupe: bool = False
 ) -> list[dict]:
-    """Simpan daftar kartu flashcard (hasil AI atau manual) ke review_cards."""
+    """Simpan daftar kartu flashcard (hasil AI/manual) ke review_cards.
+
+    ``dedupe=True`` melewati kartu yang pertanyaannya sudah ada (case/tab
+    tidak sensitif) — dipakai konversi jawaban kuis yang salah.
+    """
     now = _now()
     saved: list[dict] = []
+    existing: set[str] = set()
     with _conn_learning(db_path) as conn:
+        if dedupe:
+            existing = {
+                row["question"].strip().lower()
+                for row in conn.execute(
+                    "SELECT question FROM review_cards"
+                ).fetchall()
+            }
         for c in cards:
             card_id = uuid.uuid4().hex
             question = c.get("front") or c.get("question") or ""
@@ -1322,6 +1350,10 @@ def save_flashcards_to_deck(
             src = c.get("source") or None
             if not question:
                 continue
+            norm = question.strip().lower()
+            if dedupe and norm in existing:
+                continue
+            existing.add(norm)
             conn.execute(
                 "INSERT INTO review_cards (card_id, question, answer, source, created_at, next_due, interval_days, ease_factor, repetitions, lapses) "
                 "VALUES (?, ?, ?, ?, ?, ?, 1, 2.5, 0, 0)",
@@ -1339,6 +1371,40 @@ def save_flashcards_to_deck(
                 "lapses": 0,
             })
     return saved
+
+
+def save_wrong_answers_to_deck(
+    db_path: str | Path, attempt_id: str, details: list[dict]
+) -> list[dict]:
+    """Ubah soal kuis yang dijawab SALAH menjadi kartu review SM-2 (dedupe).
+
+    Menutup loop belajar: salah di kuis → langsung masuk antrean repetisi.
+    Return daftar kartu yang berhasil disimpan.
+    """
+    attempt = quiz_attempt_detail(db_path, attempt_id)
+    if not attempt:
+        return []
+    by_question = {q["question"]: q for q in attempt["questions"]}
+    cards: list[dict] = []
+    for d in details:
+        if d.get("correct"):
+            continue
+        q = by_question.get(d.get("question", ""))
+        if not q:
+            continue
+        options = q.get("options") or []
+        ci = q.get("correct_index", -1)
+        answer = options[ci] if 0 <= ci < len(options) else ""
+        cards.append(
+            {
+                "front": q["question"],
+                "back": answer,
+                "source": attempt["source"],
+            }
+        )
+    if not cards:
+        return []
+    return save_flashcards_to_deck(db_path, cards, dedupe=True)
 
 
 def answer_flashcard(

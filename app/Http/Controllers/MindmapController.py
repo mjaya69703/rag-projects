@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.Http.Requests.MindmapRequests import (
     CreateAnnotationRequest,
     CreateGlossaryTermRequest,
-    UpdateAnnotationRequest,
-    UpdateGlossaryTermRequest,
 )
 from app.Repositories.AnnotationRepository import AnnotationRepository
-from app.Repositories.VectorRepository import VectorRepository
 from app.Services.MindmapService import MindmapService
 
 router = APIRouter(tags=["Knowledge Artifacts"])
@@ -29,7 +25,7 @@ def get_mindmap_service(request: Request) -> MindmapService:
 
 @router.get("/learning/mindmap")
 def mindmap_endpoint(
-    source: Optional[str] = None,
+    source: str | None = None,
     service: MindmapService = Depends(get_mindmap_service),
 ) -> dict:
     tree = service.generate_mindmap(source=source)
@@ -47,8 +43,8 @@ def summary_endpoint(
 
 @router.get("/annotations")
 def list_annotations_endpoint(
-    source: Optional[str] = None,
-    tag: Optional[str] = None,
+    source: str | None = None,
+    tag: str | None = None,
     service: MindmapService = Depends(get_mindmap_service),
 ) -> dict:
     items = service.list_annotations(source=source, tag=tag)
@@ -80,8 +76,8 @@ def delete_annotation_endpoint(
 @router.get("/glossary")
 def list_glossary_endpoint(
     search: str = "",
-    source: Optional[str] = None,
-    verified: Optional[bool] = None,
+    source: str | None = None,
+    verified: bool | None = None,
     limit: int = 100,
     service: MindmapService = Depends(get_mindmap_service),
 ) -> dict:
@@ -108,7 +104,7 @@ def create_glossary_endpoint(
 @router.get("/glossary/candidates")
 def glossary_candidates_endpoint(
     request: Request,
-    source: Optional[str] = None,
+    source: str | None = None,
     limit: int = 10,
 ) -> dict:
     from app import glossary as glossary_module

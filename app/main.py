@@ -44,8 +44,8 @@ import hmac
 import json
 import logging
 import logging.handlers
-import sqlite3
 import shutil
+import sqlite3
 import statistics
 import threading
 import time
@@ -54,7 +54,15 @@ from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
@@ -76,7 +84,12 @@ from app.llm_client import LLMError
 from app.rag_engine import RAGEngine
 from app.url_parser import parse_url
 from app.vector_store import VectorStore
-from app.watch_folder import SUPPORTED_EXTENSIONS, get_category_for_path, parse_any, scan_pending
+from app.watch_folder import (
+    SUPPORTED_EXTENSIONS,
+    get_category_for_path,
+    parse_any,
+    scan_pending,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +270,7 @@ class CustomCardRequest(BaseModel):
 class QuizGenerateRequest(BaseModel):
     source: str | None = None
     n: int = Field(default=5, ge=1, le=20)
+    topic: str | None = Field(default=None, max_length=200)
 
 
 class QuizGradeRequest(BaseModel):
@@ -1459,10 +1473,10 @@ def delete_document(source: str, purge: bool = False) -> dict:
         raise HTTPException(
             status_code=404, detail=f"Dokumen '{source}' tidak ditemukan."
         )
-    
+
     # Catat ke deleted documents agar grounding & watch-folder tahu
     db.record_deleted_document(settings.db_path, source)
-    
+
     # Hapus file fisik dari folder uploads jika ada agar tidak re-indeks otomatis
     try:
         cand1 = settings.upload_dir / source
@@ -1642,11 +1656,17 @@ def learning_progress() -> dict:
 @app.post("/learning/quiz/generate")
 @app.post("/api/learning/quiz/generate")
 def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
-    """Buat soal pilihan ganda dari materi (#4, P2-04)."""
+    """Buat soal pilihan ganda dari materi (#4, P2-04).
+
+    `topic` opsional: kuis difokuskan ke satu topik/weak-spot via hybrid
+    search (bukan seluruh dokumen).
+    """
     engine: RAGEngine = app.state.engine
     settings: Settings = app.state.settings
     try:
-        questions = learning.generate_quiz(engine, source=req.source, n=req.n)
+        questions = learning.generate_quiz(
+            engine, source=req.source, n=req.n, topic=req.topic
+        )
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
     if not questions:
@@ -1658,6 +1678,7 @@ def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
         "status": "ok",
         "attempt_id": attempt["attempt_id"],
         "source": attempt["source"],
+        "topic": req.topic,
         "questions": attempt["questions"],
     }
 
@@ -1668,7 +1689,8 @@ def learning_quiz_grade(req: QuizGradeRequest) -> dict:
     """Koreksi jawaban kuis secara DETERMINISTIK dari kunci server (P2-04).
 
     Pembahasan per soal dihasilkan LLM (opsional, tidak mengubah skor);
-    bila LLM gagal, hasil tetap dikembalikan tanpa pembahasan.
+    soal yang dijawab SALAH otomatis ditambahkan ke dek flashcard SM-2
+    (dedupe) — menutup loop belajar.
     """
     settings: Settings = app.state.settings
     engine: RAGEngine = app.state.engine
@@ -1686,7 +1708,11 @@ def learning_quiz_grade(req: QuizGradeRequest) -> dict:
         for i, detail in enumerate(result["details"]):
             if i < len(explanations):
                 detail["explanation"] = explanations[i]
-    return {"status": "ok", **result}
+
+    saved_cards = learning.save_wrong_answers_to_deck(
+        settings.db_path, req.attempt_id, result["details"]
+    )
+    return {"status": "ok", **result, "saved_cards": saved_cards}
 
 
 @app.get("/learning/quiz/history")
@@ -1710,6 +1736,29 @@ def learning_quiz_attempt_detail(attempt_id: str) -> dict:
             status_code=404, detail="Attempt kuis tidak ditemukan."
         )
     return {"status": "ok", **detail}
+
+
+@app.get("/learning/export")
+@app.get("/api/learning/export")
+def learning_export() -> dict:
+    """Export data belajar sebagai JSON (deck, kuis, glossary, mastery).
+
+    Dipakai backup portabel + tombol "Unduh Data Belajar" di Settings.
+    """
+    settings: Settings = app.state.settings
+    return {
+        "status": "ok",
+        "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "deck": learning.list_review_cards(settings.db_path, limit=5000),
+        "quiz_history": learning.quiz_history(settings.db_path, limit=5000),
+        "flashcard_stats": learning.flashcard_stats(
+            settings.db_path, limit=5000
+        ),
+        "mastery": learning.mastery_stats(settings.db_path),
+        "weak_spots": learning.weak_spots(settings.db_path, limit=50),
+        "progress": learning.document_progress(settings.db_path),
+        "glossary": db.list_glossary(settings.db_path, limit=5000),
+    }
 
 
 @app.get("/learning/flashcards")

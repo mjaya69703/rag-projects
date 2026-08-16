@@ -28,6 +28,8 @@ services:
       - API_TOKEN=${API_TOKEN:-}
       - RATE_LIMIT_QPM=${RATE_LIMIT_QPM:-30}
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # Kualitas retrieval: reranker cross-encoder (0 = matikan)
+      - RERANK_ENABLED=${RERANK_ENABLED:-true}
       # Integrasi eksternal (opsional)
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
     volumes:

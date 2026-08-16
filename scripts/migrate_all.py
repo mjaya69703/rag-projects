@@ -1,13 +1,14 @@
 import sqlite3
 from pathlib import Path
 
+
 def migrate_db(db_path: Path):
     if not db_path.exists():
         print(f"DB {db_path} not found")
         return
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    
+
     # 1. review_cards
     rc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(review_cards)").fetchall()}
     if "ease_factor" not in rc_cols:
@@ -27,7 +28,7 @@ def migrate_db(db_path: Path):
         conn.execute("ALTER TABLE review_cards ADD COLUMN interval_days INTEGER NOT NULL DEFAULT 1")
     if "lapses" not in rc_cols:
         conn.execute("ALTER TABLE review_cards ADD COLUMN lapses INTEGER NOT NULL DEFAULT 0")
-        
+
     # 2. quiz_attempts
     qa_cols = {r["name"] for r in conn.execute("PRAGMA table_info(quiz_attempts)").fetchall()}
     if qa_cols:

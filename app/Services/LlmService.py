@@ -7,8 +7,9 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any
 
 import httpx
 from dotenv import load_dotenv

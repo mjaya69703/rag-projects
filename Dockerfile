@@ -35,6 +35,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # HuggingFace saat runtime (cold start cepat, aman untuk server offline).
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
 
+# Pre-download reranker cross-encoder (P2-06) — sama alasannya.
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+
 # Copy application source code & command runner
 COPY app/ ./app/
 COPY database/ ./database/

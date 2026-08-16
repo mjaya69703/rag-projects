@@ -2,27 +2,28 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel
 
 
 class QuizQuestion(BaseModel):
     id: int
     question: str
-    options: List[str]
-    hint: Optional[str] = None
+    options: list[str]
+    hint: str | None = None
 
 
 class QuizAttempt(BaseModel):
     id: str
-    source: Optional[str] = None
-    questions: List[Dict[str, Any]]
+    source: str | None = None
+    questions: list[dict[str, Any]]
     created_at: str
 
 
 class QuizScore(BaseModel):
-    id: Optional[int] = None
-    source: Optional[str] = None
+    id: int | None = None
+    source: str | None = None
     score: int
     total: int
     created_at: str

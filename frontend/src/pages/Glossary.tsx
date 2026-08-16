@@ -244,8 +244,8 @@ export default function Glossary() {
 
       {/* Category Pills Filter */}
       {categories.length > 0 && (
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', marginRight: '0.25rem' }}>
+        <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '1.25rem', overflowX: 'auto', maxWidth: '100%', paddingBottom: '0.25rem', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase', marginRight: '0.25rem', whiteSpace: 'nowrap' }}>
             Kategori:
           </span>
           <button
@@ -260,6 +260,7 @@ export default function Glossary() {
               fontSize: '0.8rem',
               fontWeight: '600',
               cursor: 'pointer',
+              whiteSpace: 'nowrap',
             }}
           >
             Semua ({terms.length})
@@ -278,6 +279,7 @@ export default function Glossary() {
                 fontSize: '0.8rem',
                 fontWeight: '600',
                 cursor: 'pointer',
+                whiteSpace: 'nowrap',
               }}
             >
               {cat} ({terms.filter((t) => (t.category || 'Umum') === cat).length})
@@ -287,7 +289,7 @@ export default function Glossary() {
       )}
 
       {loading ? (
-        <Card style={{ padding: '4rem', display: 'flex', justifyContent: 'center' }}>
+        <Card style={{ padding: '3rem', display: 'flex', justifyContent: 'center' }}>
           <Spinner size="lg" text="Memuat istilah glosarium..." />
         </Card>
       ) : filteredTerms.length === 0 ? (
@@ -306,7 +308,7 @@ export default function Glossary() {
           />
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 300px), 1fr))', gap: '1rem' }}>
           {filteredTerms.map((item, idx) => (
             <Card key={item.id || idx} padding="md" hover>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem', gap: '0.5rem' }}>

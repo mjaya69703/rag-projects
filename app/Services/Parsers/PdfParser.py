@@ -6,7 +6,6 @@ import logging
 import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List
 
 import fitz  # PyMuPDF
 from langchain_text_splitters import RecursiveCharacterTextSplitter

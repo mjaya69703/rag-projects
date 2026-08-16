@@ -20,3 +20,30 @@ createRoot(document.getElementById('root')!).render(
     </BrowserRouter>
   </StrictMode>,
 )
+
+// Register PWA Service Worker
+if ('serviceWorker' in navigator && !import.meta.env.DEV) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register('/sw.js')
+      .then((reg) => {
+        // Detect update
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing
+          if (newWorker) {
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                window.dispatchEvent(
+                  new CustomEvent('sw-update-available', { detail: { worker: newWorker } })
+                )
+              }
+            })
+          }
+        })
+      })
+      .catch((err) => {
+        console.warn('Service Worker registration failed:', err)
+      })
+  })
+}
+

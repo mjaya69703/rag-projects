@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: hf-models-${{ runner.os }}-${{ hashFiles('app/Repositories/VectorRepository.py') }}
+          key: hf-models-${{ runner.os }}-${{ hashFiles('app/Repositories/VectorRepository.py', 'app/reranker.py') }}
 
       - name: Install PyTorch (CPU-only)
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu

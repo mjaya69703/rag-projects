@@ -1,6 +1,10 @@
 """HTTP Requests package."""
 
-from app.Http.Requests.ChatRequests import QueryRequest, RenameRequest, SessionCreateRequest
+from app.Http.Requests.ChatRequests import (
+    QueryRequest,
+    RenameRequest,
+    SessionCreateRequest,
+)
 from app.Http.Requests.DocumentRequests import IngestUrlRequest, SetCategoryRequest
 from app.Http.Requests.LearningRequests import (
     AnswerCardRequest,

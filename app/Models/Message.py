@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class SourceItem(BaseModel):
     source: str
-    page: Optional[int] = None
-    chunk_index: Optional[int] = None
-    snippet: Optional[str] = None
-    score: Optional[float] = None
-    heading: Optional[str] = None
+    page: int | None = None
+    chunk_index: int | None = None
+    snippet: str | None = None
+    score: float | None = None
+    heading: str | None = None
 
 
 class Message(BaseModel):
-    id: Optional[int] = None
+    id: int | None = None
     session_id: str
     role: str  # 'user' | 'assistant'
     content: str
-    sources: Optional[List[dict]] = None
+    sources: list[dict] | None = None
     created_at: str

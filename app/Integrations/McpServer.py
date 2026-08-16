@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, List, Optional
+from typing import Any
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -13,7 +13,7 @@ except ImportError:
     FastMCP = None
     _MCP_AVAILABLE = False
 
-from app.Core.Config import Settings, config
+from app.Core.Config import Settings
 from app.Repositories.VectorRepository import VectorRepository
 from app.Services.RagService import RagService, Source
 

@@ -20,7 +20,13 @@ const NAV_ITEMS: NavMenuItem[] = [
   { to: '/settings', label: 'Pengaturan', icon: 'settings' },
 ]
 
-export function Sidebar({ children }: { children?: React.ReactNode }) {
+interface SidebarProps {
+  children?: React.ReactNode
+  isOpen?: boolean
+  onClose?: () => void
+}
+
+export function Sidebar({ children, isOpen = false, onClose }: SidebarProps) {
   const { createSession } = useSessions()
   const { status, retry } = useHealthStatus()
   const [creating, setCreating] = useState(false)
@@ -30,70 +36,100 @@ export function Sidebar({ children }: { children?: React.ReactNode }) {
     setCreating(true)
     try {
       await createSession()
+      onClose?.()
     } finally {
       setCreating(false)
     }
   }
 
+  const handleNavClick = () => {
+    onClose?.()
+  }
+
   return (
-    <aside className="sidebar">
-      {/* Brand Header */}
-      <div className="brand-row">
-        <NavLink to="/" className="brand-logo">
-          <div className="brand-icon-wrap">
-            <Icon name="brain" size={20} />
-          </div>
-          <div>
-            <div style={{ lineHeight: '1.2' }}>Cortex AI</div>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: '500' }}>Knowledge Studio</div>
-          </div>
-        </NavLink>
-      </div>
+    <>
+      {/* Mobile Drawer Backdrop */}
+      <div
+        className={`sidebar-backdrop ${isOpen ? 'open' : ''}`}
+        onClick={onClose}
+        aria-hidden="true"
+      />
 
-      {/* New Chat CTA */}
-      <button className="new-chat-btn" onClick={handleCreate} disabled={creating}>
-        <Icon name="plus" size={16} />
-        <span>{creating ? 'Membuat...' : 'Chat Baru'}</span>
-      </button>
-
-      {/* Main Navigation Menu */}
-      <nav className="nav-menu">
-        {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            end={item.to === '/'}
-          >
-            <Icon name={item.icon} size={18} />
-            <span>{item.label}</span>
+      <aside className={`sidebar ${isOpen ? 'open' : ''}`}>
+        {/* Brand Header */}
+        <div className="brand-row">
+          <NavLink to="/" className="brand-logo" onClick={handleNavClick}>
+            <div className="brand-icon-wrap">
+              <Icon name="brain" size={20} />
+            </div>
+            <div>
+              <div style={{ lineHeight: '1.2' }}>Cortex AI</div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: '500' }}>Knowledge Studio</div>
+            </div>
           </NavLink>
-        ))}
-      </nav>
 
-      {/* Custom Section (Sessions on Chat page) */}
-      {children}
-
-      {/* Sidebar Footer */}
-      <div className="sidebar-bottom">
-        <div className="status-pill" onClick={() => void retry()} style={{ cursor: 'pointer' }}>
-          <div
-            className="status-indicator"
-            style={{
-              background: status === 'connected' ? 'var(--success)' : status === 'degraded' ? 'var(--warning)' : 'var(--error)',
-              boxShadow: status === 'connected' ? '0 0 8px var(--success)' : 'none',
-            }}
-          />
-          <span>{status === 'connected' ? 'API Terhubung' : status === 'degraded' ? 'Degraded' : 'Offline'}</span>
+          {/* Close button visible only on mobile */}
+          <button
+            type="button"
+            className="sidebar-close-btn"
+            onClick={onClose}
+            aria-label="Tutup Menu"
+          >
+            <Icon name="x" size={20} />
+          </button>
         </div>
-        <Badge variant="neutral" size="sm">v3.0.0</Badge>
-      </div>
-    </aside>
+
+        {/* New Chat CTA */}
+        <button className="new-chat-btn" onClick={handleCreate} disabled={creating}>
+          <Icon name="plus" size={16} />
+          <span>{creating ? 'Membuat...' : 'Chat Baru'}</span>
+        </button>
+
+        {/* Main Navigation Menu */}
+        <nav className="nav-menu">
+          {NAV_ITEMS.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+              end={item.to === '/'}
+              onClick={handleNavClick}
+            >
+              <Icon name={item.icon} size={18} />
+              <span>{item.label}</span>
+            </NavLink>
+          ))}
+        </nav>
+
+        {/* Custom Section (Sessions on Chat page) */}
+        {children}
+
+        {/* Sidebar Footer */}
+        <div className="sidebar-bottom">
+          <div className="status-pill" onClick={() => void retry()} style={{ cursor: 'pointer' }}>
+            <div
+              className="status-indicator"
+              style={{
+                background: status === 'connected' ? 'var(--success)' : status === 'degraded' ? 'var(--warning)' : 'var(--error)',
+                boxShadow: status === 'connected' ? '0 0 8px var(--success)' : 'none',
+              }}
+            />
+            <span>{status === 'connected' ? 'API Terhubung' : status === 'degraded' ? 'Degraded' : 'Offline'}</span>
+          </div>
+          <Badge variant="neutral" size="sm">v3.0.0</Badge>
+        </div>
+      </aside>
+    </>
   )
 }
 
-export function SessionsSection() {
+export function SessionsSection({ onSelect }: { onSelect?: () => void }) {
   const { sessions, activeId, selectSession } = useSessions()
+
+  const handleSelect = (id: string) => {
+    selectSession(id)
+    onSelect?.()
+  }
 
   return (
     <div className="sidebar-sessions">
@@ -112,7 +148,7 @@ export function SessionsSection() {
             <button
               key={s.id}
               className={`session-link ${s.id === activeId ? 'active' : ''}`}
-              onClick={() => void selectSession(s.id)}
+              onClick={() => handleSelect(s.id)}
             >
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '190px' }}>
                 {s.title}

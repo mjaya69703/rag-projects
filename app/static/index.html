@@ -3,8 +3,17 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#f8fafc">
-    <title>Knowledge Base</title>
+    <meta name="description" content="Personal AI Knowledge Base with RAG, 3D Flashcards, Quiz Arena, and Spaced Repetition">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Cortex AI">
+    <meta name="application-name" content="Cortex AI">
+    <meta name="theme-color" content="#0b0e14">
+    <title>Cortex AI — Knowledge Studio</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="apple-touch-icon" href="/pwa-icon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
@@ -14,11 +23,15 @@
           var t = localStorage.getItem('kb_theme') || localStorage.getItem('kb-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
           document.documentElement.setAttribute('data-theme', t);
           document.documentElement.dataset.theme = t;
+          var metaTheme = document.querySelector('meta[name="theme-color"]');
+          if (metaTheme) {
+            metaTheme.setAttribute('content', t === 'light' ? '#f8fafc' : '#0b0e14');
+          }
         } catch (e) {}
       })();
     </script>
-    <script type="module" crossorigin src="/assets/index-CZPWV-Nx.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CaC-Qh1k.css">
+    <script type="module" crossorigin src="/assets/index-DRQLCFbD.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-s4VktSGF.css">
   </head>
   <body>
     <!-- Ambient glowing backgrounds untuk glassmorphism -->

@@ -14,4 +14,23 @@ Handover pack untuk agent AI yang akan meneruskan proyek RAG ini.
 - **Build Frontend**: `cd frontend && bun run build`
 - **Run Backend Tests**: `.venv\Scripts\python -m pytest tests\ -q`
 
+## Arsitektur (keputusan penting):
+- **`app/main.py` adalah SATU-SATUNYA router live** — semua endpoint API dan
+  middleware (auth, rate-limit, logging) ada di sana.
+- **Layer `app/Http/` (Controllers + Routes.py) BELUM di-mount** — jangan
+  `include_router(api_router)` sembarangan: route-nya menduplikasi yang sudah
+  ada di main.py (`/glossary`, `/learning/*`, `/annotations`) dan akan memicu
+  konflik. Migrasikan per-domain lalu hapus duplikatnya dari main.py.
+  Ada guard otomatis: `tests/test_api.py::test_http_layer_not_mounted`.
+- **Fitur baru dikerjakan di jalur live** (main.py + `app/learning.py` dkk),
+  bukan di layer Http. Service di `app/Services/` boleh dipakai ulang selama
+  tidak membuat client ChromaDB kedua.
+
+## Catatan Deploy:
+- `.env` TIDAK ikut repo; buat dari `.env.example` (format yang dibaca code:
+  `LLM_API_KEY`, `LLM_API_BASE`, `LLM_MODEL`). Berlaku sama untuk Docker
+  (`docker compose`) maupun non-Docker (`start.sh`).
+- Reranker cross-encoder aktif via `RERANK_ENABLED` (default true; matikan
+  dengan `0` di test/CI biar cepat).
+
 *Jangan commit `.env` (API key LLM).*

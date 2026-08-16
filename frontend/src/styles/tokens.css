@@ -83,6 +83,25 @@
   --dur-base: 250ms;
   --dur-slow: 400ms;
   --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Safe Area & Layout Insets */
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+
+  --topbar-height: 60px;
+  --topbar-height-mobile: 54px;
+  --bottomnav-height: 62px;
+  --sidebar-width: 280px;
+
+  /* Z-Index Hierarchy */
+  --z-nav: 50;
+  --z-header: 100;
+  --z-drawer-backdrop: 400;
+  --z-drawer: 500;
+  --z-modal: 1000;
+  --z-toast: 2000;
 }
 
 [data-theme="light"] {

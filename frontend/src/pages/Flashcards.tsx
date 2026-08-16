@@ -357,19 +357,20 @@ export default function Flashcards() {
 
           {/* 3D Card Box */}
           <div
+            className="flashcard-3d-arena"
             onClick={() => setIsFlipped(!isFlipped)}
             style={{
               perspective: '1200px',
-              minHeight: '340px',
+              minHeight: '320px',
               cursor: 'pointer',
-              marginBottom: '1.5rem',
+              marginBottom: '1.25rem',
             }}
           >
             <div
               style={{
                 position: 'relative',
                 width: '100%',
-                minHeight: '340px',
+                minHeight: '320px',
                 transition: 'transform 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
                 transformStyle: 'preserve-3d',
                 transform: isFlipped ? 'rotateY(180deg)' : 'none',
@@ -380,7 +381,7 @@ export default function Flashcards() {
                 style={{
                   position: isFlipped ? 'absolute' : 'relative',
                   width: '100%',
-                  minHeight: '340px',
+                  minHeight: '320px',
                   backfaceVisibility: 'hidden',
                   borderRadius: 'var(--radius-xl)',
                   background: 'var(--glass-bg)',
@@ -390,7 +391,7 @@ export default function Flashcards() {
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'space-between',
-                  padding: '2rem',
+                  padding: '1.75rem',
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -403,8 +404,8 @@ export default function Flashcards() {
                   </span>
                 </div>
 
-                <div style={{ margin: '1.5rem 0', textAlign: 'center' }}>
-                  <h3 style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)', lineHeight: '1.6' }}>
+                <div style={{ margin: '1.25rem 0', textAlign: 'center' }}>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)', lineHeight: '1.5' }}>
                     {currentCard && ('question' in currentCard ? currentCard.question : currentCard.heading)}
                   </h3>
                 </div>
@@ -420,7 +421,7 @@ export default function Flashcards() {
                 style={{
                   position: isFlipped ? 'relative' : 'absolute',
                   width: '100%',
-                  minHeight: '340px',
+                  minHeight: '320px',
                   backfaceVisibility: 'hidden',
                   transform: 'rotateY(180deg)',
                   borderRadius: 'var(--radius-xl)',
@@ -430,7 +431,7 @@ export default function Flashcards() {
                   display: 'flex',
                   flexDirection: 'column',
                   justifyContent: 'space-between',
-                  padding: '2rem',
+                  padding: '1.75rem',
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -463,7 +464,7 @@ export default function Flashcards() {
 
           {/* SM-2 Rating Controls (Visible when flipped in Due mode) */}
           {mode === 'due' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', animation: 'fadeIn 0.2s ease-out' }}>
+            <div className="flashcard-rating-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.5rem', animation: 'fadeIn 0.2s ease-out' }}>
               <Button
                 variant="danger"
                 size="md"

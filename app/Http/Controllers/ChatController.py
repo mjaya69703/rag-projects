@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from app.Http.Requests.ChatRequests import QueryRequest, RenameRequest, SessionCreateRequest
+from app.Http.Requests.ChatRequests import (
+    QueryRequest,
+    RenameRequest,
+    SessionCreateRequest,
+)
 from app.Repositories.SessionRepository import SessionRepository
 from app.Services.RagService import RagService
 
@@ -160,7 +165,7 @@ async def query_stream_endpoint(
                 event["sources"] = sources_meta
             elif event["type"] == "delta":
                 collected_parts.append(event["text"])
-            
+
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
         full_answer = "".join(collected_parts)

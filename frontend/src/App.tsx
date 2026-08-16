@@ -2,7 +2,9 @@ import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './components/AppLayout'
 import { PrivacyNotice } from './components/PrivacyNotice'
+import { PWANotifications } from './components/PWANotifications'
 import { CommandPaletteProvider } from './context/CommandPaletteContext'
+import { PWAProvider } from './context/PWAContext'
 import { SessionsProvider } from './context/SessionsContext'
 
 // Code-splitting: tiap halaman di-load saat dibuka (bundle utama kecil).
@@ -25,24 +27,28 @@ function Fallback() {
 
 export default function App() {
   return (
-    <SessionsProvider>
-      <CommandPaletteProvider>
-        <Suspense fallback={<Fallback />}>
-          <Routes>
-            <Route element={<AppLayout />}>
-              <Route path="/" element={<Chat />} />
-              <Route path="/library" element={<Library />} />
-              <Route path="/quiz" element={<Quiz />} />
-              <Route path="/flashcards" element={<Flashcards />} />
-              <Route path="/progress" element={<Progress />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/glossary" element={<Glossary />} />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </Suspense>
-      </CommandPaletteProvider>
-      <PrivacyNotice />
-    </SessionsProvider>
+    <PWAProvider>
+      <SessionsProvider>
+        <CommandPaletteProvider>
+          <Suspense fallback={<Fallback />}>
+            <Routes>
+              <Route element={<AppLayout />}>
+                <Route path="/" element={<Chat />} />
+                <Route path="/library" element={<Library />} />
+                <Route path="/quiz" element={<Quiz />} />
+                <Route path="/flashcards" element={<Flashcards />} />
+                <Route path="/progress" element={<Progress />} />
+                <Route path="/settings" element={<Settings />} />
+                <Route path="/glossary" element={<Glossary />} />
+              </Route>
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </CommandPaletteProvider>
+        <PrivacyNotice />
+        <PWANotifications />
+      </SessionsProvider>
+    </PWAProvider>
   )
 }
+

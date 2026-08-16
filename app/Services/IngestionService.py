@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
-import shutil
 import threading
-import time
 from pathlib import Path
-from typing import Any, List, Optional
 
 from app.Core.Config import Settings, config
 from app.Repositories.DocumentRepository import DocumentRepository

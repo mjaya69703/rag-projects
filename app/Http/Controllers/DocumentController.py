@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from pathlib import Path
-from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 
 from app.Core.Config import MAX_UPLOAD_MB, Settings
 from app.Http.Requests.DocumentRequests import IngestUrlRequest, SetCategoryRequest
@@ -40,8 +47,8 @@ def upload_endpoint(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    source: Optional[str] = Form(default=None),
-    category: Optional[str] = Form(default=None),
+    source: str | None = Form(default=None),
+    category: str | None = Form(default=None),
     ingestion: IngestionService = Depends(get_ingest_service),
     doc_repo: DocumentRepository = Depends(get_doc_repo),
 ) -> dict:

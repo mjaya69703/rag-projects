@@ -106,27 +106,29 @@ export default function Chat() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          paddingBottom: '1rem',
+          paddingBottom: '0.75rem',
           borderBottom: '1px solid var(--border-subtle)',
-          marginBottom: '1rem',
+          marginBottom: '0.75rem',
+          flexWrap: 'wrap',
+          gap: '0.5rem',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', minWidth: '0' }}>
+          <h2 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '240px' }}>
             {activeSession ? activeSession.title : 'Chat Studio'}
           </h2>
           <Badge variant="primary" size="sm">
-            {chatMode === 'sliding' ? 'Sliding Context' : 'Memory Summary'}
+            {chatMode === 'sliding' ? 'Sliding' : 'Summary'}
           </Badge>
           {selectedDoc && (
-            <Badge variant="secondary" size="sm">
-              📄 {selectedDoc}
+            <Badge variant="secondary" size="sm" title={selectedDoc}>
+              📄 {selectedDoc.length > 15 ? `${selectedDoc.substring(0, 15)}…` : selectedDoc}
             </Badge>
           )}
         </div>
 
         {activeSession && (
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.35rem' }}>
             <Button
               variant="ghost"
               size="sm"
@@ -134,7 +136,7 @@ export default function Chat() {
               onClick={() => setIsRenameOpen(true)}
               title="Ubah judul percakapan"
             >
-              Ubah Nama
+              Ubah
             </Button>
             <Button
               variant="ghost"
@@ -150,16 +152,16 @@ export default function Chat() {
       </div>
 
       {/* Messages Stream Container */}
-      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '0.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+      <div style={{ flex: 1, overflowY: 'auto', paddingRight: '0.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         {messages.length === 0 ? (
-          <div style={{ margin: 'auto 0', padding: '2rem 0' }}>
+          <div style={{ margin: 'auto 0', padding: '1.5rem 0' }}>
             <EmptyState
               icon="brain"
-              title="Mulai Percakapan Baru dengan Cortex"
+              title="Mulai Percakapan dengan Cortex"
               description="Tanyakan apa pun seputar dokumen yang telah Anda unggah. Cortex akan menjawab secara presisi dengan sitasi sumber."
             />
             {/* Quick Suggestion Chips */}
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1.25rem', padding: '0 0.5rem' }}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -205,8 +207,8 @@ export default function Chat() {
                 {/* Avatar Icon */}
                 <div
                   style={{
-                    width: '36px',
-                    height: '36px',
+                    width: '32px',
+                    height: '32px',
                     borderRadius: 'var(--radius-md)',
                     background: isUser ? 'var(--bg-surface)' : 'linear-gradient(135deg, var(--accent) 0%, var(--cyan) 100%)',
                     display: 'flex',
@@ -215,15 +217,15 @@ export default function Chat() {
                     color: '#fff',
                     flexShrink: 0,
                     fontWeight: '700',
-                    fontSize: '0.8rem',
+                    fontSize: '0.75rem',
                     boxShadow: isUser ? 'none' : '0 4px 14px var(--accent-glow)',
                   }}
                 >
-                  {isUser ? 'YOU' : <Icon name="sparkles" size={18} />}
+                  {isUser ? 'YOU' : <Icon name="sparkles" size={16} />}
                 </div>
 
                 {/* Content */}
-                <div style={{ flex: 1, overflow: 'hidden' }}>
+                <div style={{ flex: 1, overflow: 'hidden', minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
                     <span style={{ fontWeight: '700', fontSize: '0.85rem', color: isUser ? 'var(--text-primary)' : 'var(--accent)' }}>
                       {isUser ? 'Anda' : 'Cortex AI'}
@@ -254,11 +256,11 @@ export default function Chat() {
 
                   {/* Sources Accordion */}
                   {msg.sources && msg.sources.length > 0 && (
-                    <div style={{ marginTop: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    <div style={{ marginTop: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                       <div style={{ fontSize: '0.75rem', fontWeight: '700', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
                         📚 Sumber Rujukan Terverifikasi ({msg.sources.length}):
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '0.5rem' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '0.5rem' }}>
                         {msg.sources.map((s, sIdx) => (
                           <SourceCard key={sIdx} source={s} index={sIdx} />
                         ))}
@@ -272,7 +274,7 @@ export default function Chat() {
         )}
 
         {isStreaming && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '1rem', color: 'var(--accent)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.75rem 1rem', color: 'var(--accent)' }}>
             <Spinner size="sm" />
             <span style={{ fontSize: '0.85rem', fontWeight: '500' }}>Cortex sedang menganalisis dokumen dan merangkai jawaban...</span>
           </div>
@@ -284,18 +286,19 @@ export default function Chat() {
       {/* Floating Prompt Input Bar */}
       <div
         style={{
-          marginTop: '1rem',
+          marginTop: '0.75rem',
           background: 'var(--glass-bg)',
           backdropFilter: 'var(--glass-blur)',
+          WebkitBackdropFilter: 'var(--glass-blur)',
           border: '1px solid var(--glass-border)',
           borderRadius: 'var(--radius-xl)',
-          padding: '0.75rem 1rem',
+          padding: '0.65rem 0.85rem',
           boxShadow: 'var(--shadow-md)',
         }}
       >
         {/* Controls Row */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem', flexWrap: 'wrap', gap: '0.4rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
             <select
               value={selectedDoc}
               onChange={(e) => setSelectedDoc(e.target.value)}
@@ -304,8 +307,9 @@ export default function Chat() {
                 border: '1px solid var(--border-default)',
                 color: 'var(--text-secondary)',
                 fontSize: '0.78rem',
-                padding: '0.25rem 0.6rem',
+                padding: '0.25rem 0.5rem',
                 borderRadius: 'var(--radius-sm)',
+                maxWidth: '160px',
               }}
             >
               <option value="">Semua Dokumen</option>
@@ -324,7 +328,7 @@ export default function Chat() {
                 border: '1px solid var(--border-default)',
                 color: 'var(--text-secondary)',
                 fontSize: '0.78rem',
-                padding: '0.25rem 0.6rem',
+                padding: '0.25rem 0.5rem',
                 borderRadius: 'var(--radius-sm)',
                 cursor: 'pointer',
               }}
@@ -333,20 +337,20 @@ export default function Chat() {
             </button>
           </div>
 
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-            Tekan <kbd style={{ padding: '0.1rem 0.35rem', borderRadius: '4px', background: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}>Enter</kbd> untuk kirim, <kbd style={{ padding: '0.1rem 0.35rem', borderRadius: '4px', background: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}>Shift+Enter</kbd> untuk baris baru
+          <span className="top-bar-breadcrumb-parent" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+            Tekan <kbd style={{ padding: '0.1rem 0.35rem', borderRadius: '4px', background: 'var(--bg-surface)', border: '1px solid var(--border-default)' }}>Enter</kbd> kirim
           </span>
         </div>
 
         {/* Input Textarea & Send Button */}
-        <form onSubmit={handleSend} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.75rem' }}>
+        <form onSubmit={handleSend} style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>
           <textarea
             ref={textareaRef}
             rows={2}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Tanyakan sesuatu tentang dokumen Anda..."
+            placeholder="Tanyakan sesuatu tentang dokumen..."
             style={{
               flex: 1,
               background: 'transparent',
@@ -355,7 +359,8 @@ export default function Chat() {
               resize: 'none',
               color: 'var(--text-primary)',
               fontSize: '0.92rem',
-              lineHeight: '1.5',
+              lineHeight: '1.4',
+              padding: '0.25rem 0',
             }}
           />
 
@@ -364,6 +369,7 @@ export default function Chat() {
             variant="primary"
             icon="send"
             disabled={!input.trim() || isStreaming}
+            size="sm"
           >
             Kirim
           </Button>

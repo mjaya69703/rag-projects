@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from fastapi import APIRouter, Depends, Request
+
+from fastapi import APIRouter, Request
 
 from app.Core.Config import Settings
 from app.Repositories.SessionRepository import SessionRepository

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 from app.Core.Config import Settings
 from app.Repositories.VectorRepository import VectorRepository

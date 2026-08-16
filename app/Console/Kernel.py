@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+
 from app.Console import IngestCommand, QueryCommand, ServeCommand
 
 COMMANDS = {

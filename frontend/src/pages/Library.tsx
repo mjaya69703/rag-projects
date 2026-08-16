@@ -185,15 +185,16 @@ export default function Library() {
         }
       />
 
-      {/* KPI Stats Row - Spacious Gap */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.5rem' }}>
+      {/* KPI Stats Row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '1rem' }}>
         <StatCard title="Total Dokumen" value={documents.length} icon="file" subtitle="Terdaftar di sistem" />
         <StatCard title="Total Chunks" value={totalChunks} icon="library" subtitle="Vektor terindeks" />
         <StatCard title="Kategori Unik" value={uniqueCategories.length - 1} icon="tag" subtitle="Kluster materi" />
       </div>
 
-      {/* Spacious Interactive Drop Zone */}
+      {/* Interactive Drop Zone */}
       <div
+        className="upload-dropzone"
         onClick={() => fileInputRef.current?.click()}
         onDragOver={(e) => {
           e.preventDefault()
@@ -208,14 +209,14 @@ export default function Library() {
         style={{
           border: `2px dashed ${isDragOver ? 'var(--accent)' : 'var(--border-default)'}`,
           borderRadius: 'var(--radius-xl)',
-          padding: '3rem 2rem',
+          padding: '2.5rem 1.5rem',
           textAlign: 'center',
           background: isDragOver ? 'var(--accent-bg)' : 'var(--bg-surface)',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: '1rem',
+          gap: '0.85rem',
           cursor: 'pointer',
           transition: 'all var(--dur-fast) var(--ease-spring)',
           boxShadow: isDragOver ? '0 0 30px var(--accent-glow)' : 'var(--shadow-sm)',
@@ -233,8 +234,8 @@ export default function Library() {
 
         <div
           style={{
-            width: '56px',
-            height: '56px',
+            width: '48px',
+            height: '48px',
             borderRadius: '50%',
             background: 'var(--accent-bg)',
             color: 'var(--accent)',
@@ -244,35 +245,35 @@ export default function Library() {
             boxShadow: '0 4px 16px var(--accent-glow)',
           }}
         >
-          <Icon name="upload" size={26} />
+          <Icon name="upload" size={24} />
         </div>
 
         <div>
-          <div style={{ fontWeight: '700', fontSize: '1.05rem', color: 'var(--text-primary)' }}>
+          <div style={{ fontWeight: '700', fontSize: '1rem', color: 'var(--text-primary)' }}>
             {uploading ? 'Sedang Memproses Upload...' : 'Klik atau Tarik & Lepas File ke Sini'}
           </div>
-          <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
-            Mendukung file PDF, Markdown, DOCX, PPTX, HTML, dan TXT (Maks. 50MB per file)
+          <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+            Mendukung PDF, Markdown, DOCX, PPTX, HTML, TXT (Maks. 50MB)
           </div>
         </div>
       </div>
 
       {/* Filter and Search Bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '0.4rem', overflowX: 'auto', maxWidth: '100%', paddingBottom: '0.25rem' }}>
           {uniqueCategories.map((cat) => (
             <button
               key={cat}
               onClick={() => setSelectedCategory(cat)}
               className={`badge ${selectedCategory === cat ? 'badge--primary' : 'badge--neutral'}`}
-              style={{ cursor: 'pointer', fontSize: '0.82rem', padding: '0.35rem 0.85rem' }}
+              style={{ cursor: 'pointer', fontSize: '0.8rem', padding: '0.35rem 0.75rem', whiteSpace: 'nowrap' }}
             >
               {cat === 'all' ? 'Semua Dokumen' : cat}
             </button>
           ))}
         </div>
 
-        <div style={{ width: '280px' }}>
+        <div style={{ flex: '1 1 220px', minWidth: '180px' }}>
           <Input
             placeholder="Cari nama dokumen..."
             icon="search"
@@ -282,9 +283,9 @@ export default function Library() {
         </div>
       </div>
 
-      {/* Document Grid Cards - Spacious Gap */}
+      {/* Document Grid Cards */}
       {loading ? (
-        <Card style={{ padding: '4rem', display: 'flex', justifyContent: 'center' }}>
+        <Card style={{ padding: '3rem', display: 'flex', justifyContent: 'center' }}>
           <Spinner size="lg" text="Memuat repositori dokumen..." />
         </Card>
       ) : filteredDocs.length === 0 ? (
@@ -296,7 +297,7 @@ export default function Library() {
           />
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))', gap: '1.25rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 300px), 1fr))', gap: '1rem' }}>
           {filteredDocs.map((doc) => {
             const badge = getFileBadge(doc.source)
             return (

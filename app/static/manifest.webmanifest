@@ -1,0 +1,71 @@
+{
+  "name": "Cortex AI - Personal Knowledge Studio",
+  "short_name": "Cortex AI",
+  "description": "Personal AI Knowledge Base with RAG, 3D Flashcards, Quiz Arena, and Spaced Repetition",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "orientation": "any",
+  "lang": "id",
+  "dir": "ltr",
+  "categories": ["education", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Chat Studio",
+      "short_name": "Chat",
+      "description": "Buka sesi tanya jawab AI",
+      "url": "/",
+      "icons": [{ "src": "/pwa-icon.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "Knowledge Library",
+      "short_name": "Library",
+      "description": "Kelola repositori dokumen",
+      "url": "/library",
+      "icons": [{ "src": "/pwa-icon.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "3D Flashcards",
+      "short_name": "Flashcards",
+      "description": "Latihan hafalan Spaced Repetition",
+      "url": "/flashcards",
+      "icons": [{ "src": "/pwa-icon.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "AI Quiz Arena",
+      "short_name": "Quiz",
+      "description": "Uji pemahaman materi secara deterministik",
+      "url": "/quiz",
+      "icons": [{ "src": "/pwa-icon.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "Diagnostik & Progress",
+      "short_name": "Progress",
+      "description": "Analitik daya serap dan rekomendasi belajar",
+      "url": "/progress",
+      "icons": [{ "src": "/pwa-icon.svg", "sizes": "192x192" }]
+    }
+  ]
+}

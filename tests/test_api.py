@@ -82,6 +82,23 @@ def test_health() -> None:
         assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_http_layer_not_mounted() -> None:
+    """main.py satu-satunya router live; layer app/Http BELUM di-mount.
+
+    Guard: mencegah `include_router(api_router)` dua kali yang akan
+    menduplikasi route (/glossary, /learning/*, /annotations) dan memicu
+    konflik method (405). Bila layer Http mau dipakai, migrasikan route
+    per domain dan hapus duplikatnya dari main.py dulu.
+    """
+    from app.Http.Routes import api_router as new_api
+
+    new_route_ids = {id(r) for r in new_api.routes}
+    assert new_api.routes, "layer Http punya route"
+    assert not any(
+        id(r) in new_route_ids for r in app.routes
+    ), "route app/Http sudah di-mount ke main.py (double-mount!)"
+
+
 def test_full_flow() -> None:
     """Upload -> list -> query (mock LLM) -> delete."""
     with TestClient(app) as client:
@@ -146,6 +163,7 @@ def test_upload_reject_unsupported_ext() -> None:
 def test_upload_markdown() -> None:
     """Markdown (.md) sekarang format didukung (fitur #10)."""
     with TestClient(app) as client:
+        _use_mock_llm(client)  # deterministik: jangan panggil LLM asli
         md = b"# Bab VLAN\n\nVLAN adalah metode mempartisi jaringan fisik.\n"
         body = _upload_wait(
             client,
@@ -346,6 +364,7 @@ def test_frontend_api_surface() -> None:
             ("GET", "/learning/progress", None),
             ("GET", "/learning/recommendations", None),
             ("GET", "/learning/quiz/history", None),
+            ("GET", "/learning/export", None),
             ("GET", "/learning/mindmap", None),
             ("GET", "/learning/summary", {"params": {"source": "sample_api.pdf"}}),
             ("GET", "/glossary", None),
@@ -506,6 +525,82 @@ def test_quiz_attempt_detail_endpoint() -> None:
 
         # Attempt tidak dikenal -> 404
         assert client.get("/learning/quiz/attempts/tidak-ada").status_code == 404
+
+
+def test_quiz_wrong_answers_become_cards() -> None:
+    """Soal kuis yang dijawab SALAH → otomatis kartu review SM-2 (dedupe)."""
+    with TestClient(app) as client:
+        _upload_wait(
+            client,
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        llm = _use_mock_llm(client)
+        llm.text = json.dumps([
+            {
+                "question": "Apa fungsi VLAN?",
+                "options": ["Partisi broadcast", "Enkripsi", "Routing", "NAT"],
+                "answer_index": 0,
+            },
+            {
+                "question": "Apa itu OSPF?",
+                "options": ["Distance vector", "Link-state", "Path vector", "NAT"],
+                "answer_index": 1,
+            },
+        ])
+        resp = client.post(
+            "/learning/quiz/generate", json={"n": 2, "source": "sample_api.pdf"}
+        )
+        assert resp.status_code == 200, resp.text
+        attempt_id = resp.json()["attempt_id"]
+
+        # Semua jawaban salah → kedua soal masuk dek
+        llm.text = json.dumps(["P1", "P2"])
+        resp = client.post(
+            "/learning/quiz/grade",
+            json={"attempt_id": attempt_id, "answers": [3, 3]},
+        )
+        assert resp.status_code == 200, resp.text
+        saved = resp.json()["saved_cards"]
+        assert len(saved) == 2, "2 jawaban salah harus jadi 2 kartu"
+        questions = {c["question"] for c in saved}
+        assert "Apa fungsi VLAN?" in questions
+        assert "Apa itu OSPF?" in questions
+        # jawaban kartu = opsi yang benar
+        by_q = {c["question"]: c for c in saved}
+        assert by_q["Apa fungsi VLAN?"]["answer"] == "Partisi broadcast"
+
+        # Dikoreksi lagi dengan jawaban salah yang sama → dedupe (0 kartu baru)
+        resp = client.post(
+            "/learning/quiz/grade",
+            json={"attempt_id": attempt_id, "answers": [3, 3]},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["saved_cards"] == [], "dedupe: jangan duplikat kartu"
+
+
+def test_quiz_generate_with_topic() -> None:
+    """Kuis mode fokus topik: hybrid search ke chunk relevan topik."""
+    with TestClient(app) as client:
+        _upload_wait(
+            client,
+            files={"file": ("sample_api.pdf", _sample_pdf(), "application/pdf")},
+        )
+        llm = _use_mock_llm(client)
+        llm.text = json.dumps([
+            {
+                "question": "Soal tentang VLAN?",
+                "options": ["A", "B", "C", "D"],
+                "answer_index": 0,
+            },
+        ])
+        resp = client.post(
+            "/learning/quiz/generate",
+            json={"n": 1, "source": "sample_api.pdf", "topic": "VLAN"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["topic"] == "VLAN"
+        assert len(body["questions"]) == 1
 
 
 def test_annotations_crud() -> None:

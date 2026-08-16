@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List, Set
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,9 +15,9 @@ SUMMARY_RECENT: int = 5            # Mode 2: summary + last 5 messages
 SUMMARY_INTERVAL: int = 10         # auto-generate summary every 10 messages
 TOKEN_WARNING: int = 4000          # token warning threshold
 
-PUBLIC_API_PATHS: Set[str] = {"/health"}
+PUBLIC_API_PATHS: set[str] = {"/health"}
 
-DEFAULT_REDACTION_PATTERNS: List[str] = [
+DEFAULT_REDACTION_PATTERNS: list[str] = [
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
     r"(\+?62|0)8[0-9]{7,12}",
     r"(sk-[A-Za-z0-9]{20,}|[A-Za-z0-9_-]{32,})",

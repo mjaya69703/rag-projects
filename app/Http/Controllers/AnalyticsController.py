@@ -5,11 +5,11 @@ from __future__ import annotations
 import shutil
 import statistics
 import time
+
 from fastapi import APIRouter, Depends, Request
 
 from app.Core.Config import Settings
 from app.Repositories.DocumentRepository import DocumentRepository
-from app.Repositories.SessionRepository import SessionRepository
 
 router = APIRouter(tags=["Analytics"])
 

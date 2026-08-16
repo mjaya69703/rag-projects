@@ -320,9 +320,15 @@ class RAGEngine:
     def _retrieve_sources(
         self, question: str, top_k: int, where: dict | None
     ) -> list[Source]:
-        """Ambil chunk paling relevan beserta metadata sumbernya."""
-        results = self.store.search(question, top_k=top_k, where=where)
-        return [
+        """Ambil chunk paling relevan beserta metadata sumbernya.
+
+        Ambil sedikit lebih banyak dari top_k, lalu urutkan ulang dengan
+        reranker cross-encoder (bila aktif) supaya urutan konteks benar
+        paling relevan (P2-06). Fallback: urutan hybrid semula.
+        """
+        fetch_k = max(top_k * 2, min(top_k + 5, 30))
+        results = self.store.search(question, top_k=fetch_k, where=where)
+        sources = [
             Source(
                 source=r["metadata"]["source"],
                 page=r["metadata"]["page"],
@@ -333,6 +339,13 @@ class RAGEngine:
             )
             for r in results
         ]
+        try:
+            from app.reranker import rerank
+
+            sources = rerank(question, sources)
+        except Exception:
+            logger.exception("reranker tidak tersedia, pakai urutan hybrid")
+        return sources[:top_k]
 
     @staticmethod
     def _build_context(sources: list[Source]) -> str:

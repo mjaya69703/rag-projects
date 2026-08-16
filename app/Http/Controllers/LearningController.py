@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.Http.Requests.LearningRequests import (
@@ -13,7 +12,6 @@ from app.Http.Requests.LearningRequests import (
 )
 from app.Repositories.LearningRepository import LearningRepository
 from app.Repositories.SessionRepository import SessionRepository
-from app.Repositories.VectorRepository import VectorRepository
 from app.Services.LearningService import LearningService
 
 router = APIRouter(prefix="/learning", tags=["Learning"])
@@ -48,7 +46,7 @@ def answer_card_endpoint(
         updated = learning.answer_card(req.card_id, req.remembered)
         return {"status": "ok", "card": updated}
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/quiz/generate")
@@ -72,7 +70,7 @@ def quiz_grade_endpoint(
         result = learning.grade_quiz_attempt(req.attempt_id, req.answers)
         return {"status": "ok", **result}
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/quiz/history")
@@ -86,7 +84,7 @@ def quiz_history_endpoint(
 
 @router.get("/flashcards")
 def flashcards_endpoint(
-    source: Optional[str] = None,
+    source: str | None = None,
     limit: int = 20,
     learning: LearningService = Depends(get_learning_service),
 ) -> dict:

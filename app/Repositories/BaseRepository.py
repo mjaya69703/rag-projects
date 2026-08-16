@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Optional
-from app.Core.Database import get_connection, now_utc
+
 from app.Core.Config import config
+from app.Core.Database import get_connection, now_utc
 
 
 class BaseRepository:
     """Base repository class."""
 
-    def __init__(self, db_path: Optional[str | Path] = None) -> None:
+    def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = Path(db_path or config.db_path)
 
     def get_conn(self) -> sqlite3.Connection:

@@ -27,5 +27,17 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["E501"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI: argumen default berupa pemanggilan (Depends/Query/dll) itu aman.
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.Query",
+  "fastapi.Header",
+  "fastapi.Path",
+  "fastapi.Body",
+  "fastapi.Form",
+  "fastapi.File",
+]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/*.py" = ["E402"]

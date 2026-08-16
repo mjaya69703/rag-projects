@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class ReviewCard(BaseModel):
     card_id: str
     question: str
-    source: Optional[str] = None
+    source: str | None = None
     created_at: str
-    last_reviewed: Optional[str] = None
+    last_reviewed: str | None = None
     next_due: str
     interval_days: int = 1
     lapses: int = 0
@@ -21,7 +20,7 @@ class ReviewCard(BaseModel):
 
 class FlashcardStat(BaseModel):
     heading: str
-    source: Optional[str] = None
+    source: str | None = None
     known_count: int = 0
     unknown_count: int = 0
     updated_at: str

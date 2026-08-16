@@ -7,7 +7,6 @@ import os
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, List, Optional
 
 from app.Repositories.CacheRepository import CacheRepository
 from app.Repositories.DocumentRepository import DocumentRepository

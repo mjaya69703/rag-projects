@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 try:
     from telegram import Update
@@ -18,7 +17,7 @@ try:
 except ImportError:
     _PTB_AVAILABLE = False
 
-from app.Core.Config import MAX_UPLOAD_MB, Settings, config
+from app.Core.Config import MAX_UPLOAD_MB, Settings
 from app.Services.Parsers.PdfParser import parse_pdf
 from app.Services.RagService import RagService, Source
 

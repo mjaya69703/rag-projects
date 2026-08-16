@@ -7,14 +7,13 @@ import re
 import threading
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 
 from app.Core.Config import config
-from app.Models.Document import DocumentChunk
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +170,7 @@ class VectorRepository:
         metas = data.get("metadatas") or []
         return [
             {"text": doc, "metadata": meta}
-            for doc, meta in zip(docs, metas)
+            for doc, meta in zip(docs, metas, strict=False)
         ]
 
     def list_all_documents(self) -> list[str]:
@@ -188,7 +187,7 @@ class VectorRepository:
         metas = data.get("metadatas") or []
         return [
             {"text": doc, "metadata": meta}
-            for doc, meta in zip(docs, metas)
+            for doc, meta in zip(docs, metas, strict=False)
         ]
 
     def delete_document(self, source: str) -> int:
@@ -222,7 +221,7 @@ class VectorRepository:
         metadatas = (result.get("metadatas") or [[]])[0]
         distances = (result.get("distances") or [[]])[0]
         items = []
-        for doc, meta, dist in zip(documents, metadatas, distances):
+        for doc, meta, dist in zip(documents, metadatas, distances, strict=False):
             score = 1.0 - float(dist)
             items.append({
                 "text": doc,

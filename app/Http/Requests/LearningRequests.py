@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
@@ -12,13 +11,13 @@ class AnswerCardRequest(BaseModel):
 
 
 class QuizGenerateRequest(BaseModel):
-    source: Optional[str] = None
+    source: str | None = None
     n: int = Field(default=5, ge=1, le=20)
 
 
 class QuizGradeRequest(BaseModel):
     attempt_id: str = Field(..., min_length=1, max_length=64)
-    answers: List[int]
+    answers: list[int]
 
 
 class FlashcardAnswerRequest(BaseModel):

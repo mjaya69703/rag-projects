@@ -151,7 +151,7 @@ export default function Progress() {
       ) : (
         <>
           {/* Top KPI Metrics */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1.25rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '1rem' }}>
             <StatCard
               title="Total Pertanyaan RAG"
               value={metrics.queries || 0}
@@ -188,7 +188,7 @@ export default function Progress() {
                 </h3>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))', gap: '1rem' }}>
                 {recommendations.map((rec, idx) => (
                   <Card key={idx} padding="md" style={{ borderLeft: `4px solid ${rec.priority === 'high' ? 'var(--error)' : 'var(--accent)'}` }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
@@ -210,7 +210,7 @@ export default function Progress() {
                           Latih Kartu Sekarang
                         </Button>
                       ) : rec.type === 'weak_spot' ? (
-                        <Button variant="secondary" size="sm" icon="quiz" onClick={() => navigate('/quiz')}>
+                        <Button variant="secondary" size="sm" icon="quiz" onClick={() => navigate(`/quiz?topic=${encodeURIComponent(rec.topic || '')}`)}>
                           Latih Kuis Topik Ini
                         </Button>
                       ) : (
@@ -273,8 +273,8 @@ export default function Progress() {
                           variant="secondary"
                           size="sm"
                           icon="quiz"
-                          onClick={() => navigate('/quiz')}
-                          title="Latih remedial"
+                          onClick={() => navigate(`/quiz?topic=${encodeURIComponent(ws.topic)}`)}
+                          title="Latih remedial topik ini"
                         >
                           Latih Kuis
                         </Button>

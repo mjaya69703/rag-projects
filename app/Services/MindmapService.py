@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, List, Optional
 
 from app.Repositories.AnnotationRepository import AnnotationRepository
 from app.Repositories.VectorRepository import VectorRepository
@@ -45,7 +44,7 @@ class MindmapService:
             text_snippet = item.get("text", "")[:120].strip()
             heading_map.setdefault(f"{src} > {heading}", []).append(text_snippet)
 
-        for heading, snippets in heading_map.items():
+        for heading, _snippets in heading_map.items():
             parts = heading.split(" > ")
             current = root
             for part in parts:

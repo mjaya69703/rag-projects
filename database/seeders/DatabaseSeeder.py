@@ -1,6 +1,7 @@
 """Main Database Seeder."""
 
 import sqlite3
+
 from database.seeders import GlossarySeeder, SampleCardSeeder
 
 

@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Badge,
   Button,
   Card,
   EmptyState,
   Icon,
+  Input,
   Modal,
   PageHeader,
   Select,
@@ -37,10 +39,12 @@ function accuracyBadge(pct: number): 'success' | 'warning' | 'error' {
 
 export default function Quiz() {
   const { addToast } = useToast()
+  const [searchParams] = useSearchParams()
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
   const [history, setHistory] = useState<QuizScoreItem[]>([])
   const [selectedDoc, setSelectedDoc] = useState<string>('')
   const [questionCount, setQuestionCount] = useState<number>(5)
+  const [quizTopic, setQuizTopic] = useState<string>(() => searchParams.get('topic') || '')
   const [activeTab, setActiveTab] = useState<'play' | 'history'>('play')
 
   // Active Quiz State
@@ -60,6 +64,14 @@ export default function Quiz() {
 
   useEffect(() => {
     loadInitialData()
+  }, [])
+
+  // Datang dari Progress (weak-spot) dengan ?topic= → langsung siapkan kuis
+  useEffect(() => {
+    if (searchParams.get('topic')) {
+      setIsGenerateModalOpen(true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -94,7 +106,7 @@ export default function Quiz() {
     setGenerating(true)
     setIsGenerateModalOpen(false)
     try {
-      const res = await learningService.generateQuiz(selectedDoc || null, questionCount)
+      const res = await learningService.generateQuiz(selectedDoc || null, questionCount, quizTopic.trim() || null)
       setAttempt({
         attempt_id: res.attempt_id,
         source: res.source,
@@ -103,7 +115,8 @@ export default function Quiz() {
       setUserAnswers(new Array(res.questions.length).fill(-1))
       setCurrentStep(0)
       setResult(null)
-      addToast(`Kuis baru berhasil dibuat (${res.questions.length} soal)!`, 'success')
+      const focus = quizTopic.trim() ? ` (fokus: ${quizTopic.trim()})` : ''
+      addToast(`Kuis baru berhasil dibuat${focus} (${res.questions.length} soal)!`, 'success')
     } catch (err: any) {
       addToast(err.message || 'Gagal membuat kuis.', 'error')
     } finally {
@@ -131,6 +144,9 @@ export default function Quiz() {
       setResult(res)
       loadInitialData() // refresh history
       addToast(`Kuis selesai! Skor: ${res.score} / ${res.total}`, 'success')
+      if (res.saved_cards?.length) {
+        addToast(`${res.saved_cards.length} soal yang salah ditambahkan ke kartu review SM-2!`, 'warning')
+      }
     } catch (err: any) {
       addToast(err.message || 'Gagal mengoreksi kuis.', 'error')
     } finally {
@@ -612,6 +628,16 @@ export default function Quiz() {
               ...documents.map((d) => ({ value: d.source, label: d.source })),
             ]}
           />
+
+          <Input
+            label="Topik / Fokus Materi (opsional)"
+            placeholder="Contoh: VLAN, OSPF, subnetting..."
+            value={quizTopic}
+            onChange={(e) => setQuizTopic(e.target.value)}
+          />
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '-0.75rem' }}>
+            Kuis akan dicari dari chunk yang relevan dengan topik ini (misal dari weak-spots Anda).
+          </div>
 
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>

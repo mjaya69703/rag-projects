@@ -7,7 +7,7 @@ import logging
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.Repositories.LearningRepository import LearningRepository
 from app.Repositories.SessionRepository import SessionRepository
@@ -192,9 +192,8 @@ class LearningService:
     # Quiz Generation & Deterministic Grading
     # ------------------------------------------------------------------
     def generate_quiz(self, source: str | None = None, n: int = 5) -> list[dict]:
-        where = {"source": source} if source else None
         chunks = self.vector_repo.get_by_source(source) if source else self.vector_repo.list_all_chunks()
-        
+
         chosen = []
         seen_headings = set()
         for item in chunks:

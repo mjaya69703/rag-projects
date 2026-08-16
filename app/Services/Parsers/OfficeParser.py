@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
 
 from docx import Document
 from docx.table import Table
