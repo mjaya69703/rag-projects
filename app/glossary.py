@@ -13,7 +13,11 @@ from typing import Any
 from app.llm_client import LLMError
 
 
-def _parse_candidates(raw: str, limit: int) -> list[dict[str, Any]]:
+def _parse_candidates(
+    raw: str,
+    limit: int,
+    existing_terms: set[str] | None = None,
+) -> list[dict[str, Any]]:
     cleaned = raw.strip()
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
     try:
@@ -57,11 +61,26 @@ def _parse_candidates(raw: str, limit: int) -> list[dict[str, Any]]:
         })
         if len(result) >= limit:
             break
+
+    if existing_terms:
+        for item in result:
+            item["exists"] = item["term"].casefold() in existing_terms
     return result
 
 
-def extract_candidates(engine: Any, source: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
-    """Ambil kandidat istilah dari chunk terpilih dan minta LLM mengusulkan definisi."""
+def extract_candidates(
+    engine: Any,
+    source: str | None = None,
+    limit: int = 10,
+    existing_terms: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Ambil kandidat istilah dari chunk terpilih dan minta LLM mengusulkan definisi.
+
+    ``existing_terms`` (opsional): set nama istilah yang sudah ada di tabel
+    glossary (case-insensitive). Kandidat yang sudah ada ditandai
+    ``"exists": True`` agar UI bisa menyembunyikan / menolak tombol
+    "Promosikan" — mencegah duplikat.
+    """
     limit = max(1, min(limit, 20))
     where = {"source": source} if source else None
     result = engine.store.collection.get(
@@ -96,4 +115,4 @@ def extract_candidates(engine: Any, source: str | None = None, limit: int = 10) 
         response = engine.llm.chat([{"role": "user", "content": prompt}], max_tokens=min(4096, max(1024, limit * 260)))
     except LLMError:
         raise
-    return _parse_candidates(response.text, limit)
+    return _parse_candidates(response.text, limit, existing_terms=existing_terms)

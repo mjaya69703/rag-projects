@@ -1426,8 +1426,15 @@ def list_glossary(
 def get_glossary_candidates(source: str | None = None, limit: int = 10) -> dict:
     """Ambil kandidat glossary dari dokumen via GET."""
     engine: RAGEngine = app.state.engine
+    settings: Settings = app.state.settings
+    existing = {
+        t["term"].strip().casefold()
+        for t in db.list_glossary(settings.db_path, limit=10000)
+    }
     try:
-        candidates = glossary.extract_candidates(engine, source=source, limit=limit)
+        candidates = glossary.extract_candidates(
+            engine, source=source, limit=limit, existing_terms=existing
+        )
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
     return {
@@ -1443,8 +1450,15 @@ def get_glossary_candidates(source: str | None = None, limit: int = 10) -> dict:
 def extract_glossary(req: GlossaryExtractRequest) -> dict:
     """Usulkan kandidat glossary dari dokumen; belum disimpan sebelum direview user."""
     engine: RAGEngine = app.state.engine
+    settings: Settings = app.state.settings
+    existing = {
+        t["term"].strip().casefold()
+        for t in db.list_glossary(settings.db_path, limit=10000)
+    }
     try:
-        candidates = glossary.extract_candidates(engine, source=req.source, limit=req.n)
+        candidates = glossary.extract_candidates(
+            engine, source=req.source, limit=req.n, existing_terms=existing
+        )
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
     return {

@@ -48,6 +48,7 @@ export default function Glossary() {
   const [candidates, setCandidates] = useState<GlossaryTerm[]>([])
   const [loadingCandidates, setLoadingCandidates] = useState(false)
   const [promotingAll, setPromotingAll] = useState(false)
+  const [extractError, setExtractError] = useState<string | null>(null)
 
   useEffect(() => {
     loadGlossary()
@@ -115,15 +116,33 @@ export default function Glossary() {
   }
 
   const handleStartExtraction = async () => {
+    if (!extractDoc) {
+      setExtractError('Pilih dokumen sumber dulu sebelum menjalankan AI.')
+      return
+    }
+    setExtractError(null)
     setLoadingCandidates(true)
     try {
-      const res = await glossaryService.getCandidates(extractDoc || null, extractLimit)
-      setCandidates(res.candidates || [])
-      if ((res.candidates || []).length === 0) {
+      const res = await glossaryService.getCandidates(extractDoc, extractLimit)
+      const incoming = res.candidates || []
+      const fresh = incoming.filter((c: any) => !c.exists)
+      const skipped = incoming.length - fresh.length
+      setCandidates(fresh)
+      if (fresh.length === 0 && skipped > 0) {
+        addToast(
+          `Semua ${skipped} istilah yang disarankan sudah ada di glosarium.`,
+          'info',
+        )
+      } else if (fresh.length === 0) {
         addToast('Tidak ditemukan istilah baru dari dokumen ini.', 'info')
+      } else if (skipped > 0) {
+        addToast(
+          `${skipped} istilah yang sudah ada di glosarium otomatis disembunyikan.`,
+          'info',
+        )
       }
     } catch (err: any) {
-      addToast(err.message || 'Gagal mengekstrak kandidat istilah.', 'error')
+      setExtractError(err.message || 'Gagal mengekstrak kandidat istilah.')
     } finally {
       setLoadingCandidates(false)
     }
@@ -136,7 +155,13 @@ export default function Glossary() {
       setCandidates((prev) => prev.filter((c) => c.term !== candidate.term))
       loadGlossary()
     } catch (err: any) {
-      addToast(err.message || 'Gagal menambahkan istilah.', 'error')
+      const msg = err?.message || ''
+      if (msg.toLowerCase().includes('sudah ada') || msg.toLowerCase().includes('duplicate')) {
+        addToast(`'${candidate.term}' sudah ada di glosarium — dilewati.`, 'info')
+        setCandidates((prev) => prev.filter((c) => c.term !== candidate.term))
+      } else {
+        addToast(msg || 'Gagal menambahkan istilah.', 'error')
+      }
     }
   }
 
@@ -144,16 +169,32 @@ export default function Glossary() {
     if (candidates.length === 0) return
     setPromotingAll(true)
     let added = 0
+    let skipped = 0
     for (const c of candidates) {
       try {
         await glossaryService.createTerm({ ...c, verified: true })
         added++
-      } catch {
-        // skip duplicate
+      } catch (err: any) {
+        const msg = err?.message || ''
+        if (
+          msg.toLowerCase().includes('sudah ada') ||
+          msg.toLowerCase().includes('duplicate')
+        ) {
+          skipped++
+        }
       }
     }
     setPromotingAll(false)
-    addToast(`${added} istilah berhasil dipromosikan ke glosarium!`, 'success')
+    if (added > 0 && skipped > 0) {
+      addToast(
+        `${added} istilah ditambahkan, ${skipped} sudah ada dan dilewati.`,
+        'success',
+      )
+    } else if (added > 0) {
+      addToast(`${added} istilah berhasil dipromosikan ke glosarium!`, 'success')
+    } else if (skipped > 0) {
+      addToast(`${skipped} istilah sudah ada di glosarium — tidak ada yang ditambahkan.`, 'info')
+    }
     setCandidates([])
     setIsCandidatesModalOpen(false)
     loadGlossary()
@@ -192,11 +233,10 @@ export default function Glossary() {
               variant="secondary"
               icon="sparkles"
               onClick={() => {
-                setExtractDoc(filterDoc || '')
+                setExtractDoc(filterDoc || (documents[0]?.source ?? ''))
+                setCandidates([])
+                setExtractError(null)
                 setIsCandidatesModalOpen(true)
-                if (candidates.length === 0) {
-                  handleStartExtraction()
-                }
               }}
             >
               Ekstrak Istilah dari Dokumen
@@ -301,9 +341,10 @@ export default function Glossary() {
             actionLabel="Ekstrak Istilah dari Dokumen"
             actionIcon="sparkles"
             onAction={() => {
-              setExtractDoc(filterDoc || '')
+              setExtractDoc(filterDoc || (documents[0]?.source ?? ''))
+              setCandidates([])
+              setExtractError(null)
               setIsCandidatesModalOpen(true)
-              handleStartExtraction()
             }}
           />
         </Card>
@@ -470,11 +511,14 @@ export default function Glossary() {
           {/* Controls Bar */}
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr auto', gap: '0.75rem', alignItems: 'flex-end', background: 'var(--bg-surface-raised)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
             <Select
-              label="Pilih Dokumen Sumber"
+              label="Pilih Dokumen Sumber (wajib)"
               value={extractDoc}
-              onChange={(e) => setExtractDoc(e.target.value)}
+              onChange={(e) => {
+                setExtractDoc(e.target.value)
+                setExtractError(null)
+              }}
               options={[
-                { value: '', label: 'Semua Dokumen Terindeks' },
+                { value: '', label: documents.length === 0 ? 'Belum ada dokumen terindeks' : '-- Pilih Dokumen --' },
                 ...documents.map((d) => ({ value: d.source, label: d.source })),
               ]}
             />
@@ -494,10 +538,26 @@ export default function Glossary() {
               icon="sparkles"
               onClick={handleStartExtraction}
               loading={loadingCandidates}
+              disabled={!extractDoc || loadingCandidates}
             >
               Ekstrak AI
             </Button>
           </div>
+          {extractError && (
+            <div
+              role="alert"
+              style={{
+                padding: '0.75rem 1rem',
+                borderRadius: 'var(--radius-md)',
+                background: 'var(--danger-bg, rgba(220, 38, 38, 0.1))',
+                border: '1px solid var(--danger, #dc2626)',
+                color: 'var(--danger, #dc2626)',
+                fontSize: '0.85rem',
+              }}
+            >
+              {extractError}
+            </div>
+          )}
 
           {/* Results Area */}
           {loadingCandidates ? (

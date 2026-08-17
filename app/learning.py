@@ -571,78 +571,173 @@ def document_progress(
 def generate_quiz(
     engine: Any, source: str | None = None, n: int = 5, topic: str | None = None
 ) -> list[dict]:
-    """Buat soal pilihan ganda dari chunk dokumen via LLM.
+    """Buat tepat ``n`` soal pilihan ganda dari chunk dokumen via LLM.
 
     Sumber chunk:
     - ``topic`` diberikan → cari chunk relevan via hybrid search (fokus
       topik/weak-spot), opsional dibatasi ``source``.
     - tanpa topic → ambil langsung dari collection (maks. satu chunk per
       heading).
-    LLM diminta JSON array soal; kalau parsing gagal, fallback satu soal
-    sederhana dari heading.
+
+    Strategi anti-"1 soal saja":
+    1. Kumpulkan chunk unik (satu per heading) — lebih dari ``n`` agar
+       ada cadangan bila LLM mengembalikan lebih sedikit dari yang
+       diminta.
+    2. Panggil LLM dengan tepat ``n`` chunk; validasi parsing JSON.
+    3. Bila hasil valid < ``n``, retry dengan chunk yang belum dipakai
+       (maks 2 attempt total) — LLM sering "menyusut" output saat
+       konteks panjang.
+    4. Kalau masih kurang, isi dengan soal deterministik per chunk
+       (heading-based MCQ) supaya total PASTI tepat ``n`` selama
+       materi tersedia.
+    """
+    chunks = _collect_quiz_chunks(engine.store, source, topic, n)
+    if not chunks:
+        return []
+
+    questions: list[dict] = []
+    used_headings: set[str] = set()
+    max_attempts = 2
+    for _ in range(max_attempts):
+        remaining = n - len(questions)
+        if remaining <= 0:
+            break
+        batch = [c for c in chunks if c["heading"] not in used_headings][:remaining]
+        if not batch:
+            break
+        material = "\n\n".join(
+            f"[{i + 1}] ({c['heading']})\n{c['text']}"
+            for i, c in enumerate(batch)
+        )
+        prompt = (
+            "Buat soal pilihan ganda berbahasa Indonesia berdasarkan materi "
+            "berikut. Keluarkan HANYA JSON array, tanpa teks lain. Format tiap "
+            'soal: {"question": "...", "options": ["a", "b", "c", "d"], '
+            '"answer_index": 0} dengan answer_index 0-3 menunjuk jawaban benar '
+            f"dari 4 opsi. Buat tepat {len(batch)} soal.\n\nMATERI:\n{material}"
+        )
+        try:
+            response = engine.llm.chat(
+                [{"role": "user", "content": prompt}],
+                max_tokens=min(2048, max(512, len(batch) * 220)),
+            )
+            parsed = _parse_questions(response.text)
+        except Exception:
+            parsed = []
+        kept = parsed[:remaining]
+        # Asumsikan 1 soal LLM ≈ 1 chunk (urut prompt): hanya tandai
+        # chunk yang benar-benar dipakai agar sisa chunk bisa di-retry.
+        for idx, _q in enumerate(kept):
+            if idx < len(batch):
+                used_headings.add(batch[idx]["heading"])
+        questions.extend(kept)
+        if len(questions) >= n:
+            break
+
+    if len(questions) < n:
+        seen_q = {q.get("question") for q in questions}
+        seen_heading_idx: dict[str, int] = {}
+        for c in chunks:
+            if len(questions) >= n:
+                break
+            h = c["heading"]
+            seen_heading_idx[h] = seen_heading_idx.get(h, 0) + 1
+            cq = _chunk_to_question(c, idx=seen_heading_idx[h] - 1)
+            if cq["question"] in seen_q:
+                continue
+            questions.append(cq)
+            seen_q.add(cq["question"])
+
+    return questions[:n]
+
+
+def _collect_quiz_chunks(
+    store: Any, source: str | None, topic: str | None, n: int
+) -> list[dict]:
+    """Kumpulkan chunk untuk bahan kuis.
+
+    Mengumpulkan lebih dari ``n`` chunk agar ada cadangan untuk retry
+    / fallback. Prioritaskan chunk unik per heading; bila pool unik
+    tidak cukup (dokumen kecil), ulangi heading yang sudah ada supaya
+    total ``n`` chunk tetap bisa dikumpulkan. Heading duplikat hanya
+    dipakai oleh fallback (soal deterministik) — bukan untuk pertanyaan
+    LLM yang tampil identik.
     """
     where = {"source": source} if source else None
+    target = max(n * 3, 20)
     chosen: list[dict] = []
-    seen_headings: set[str] = set()
-
+    seen: set[str] = set()
     if topic:
-        results = engine.store.search(topic, top_k=max(n * 2, 10), where=where)
+        results = store.search(topic, top_k=target, where=where)
         for r in results:
             meta = r.get("metadata") or {}
             heading = meta.get("heading") or "Intro"
-            if heading in seen_headings:
+            if heading in seen:
                 continue
-            seen_headings.add(heading)
+            seen.add(heading)
             chosen.append({"text": r.get("text", ""), "heading": heading})
-            if len(chosen) >= n:
+            if len(chosen) >= target:
                 break
     else:
-        result = engine.store.collection.get(
-            where=where, limit=n * 2, include=["documents", "metadatas"]
+        result = store.collection.get(
+            where=where, limit=target, include=["documents", "metadatas"]
         )
-        documents = result.get("documents") or []
-        metadatas = result.get("metadatas") or []
-        for doc, meta in zip(documents, metadatas, strict=True):
+        for doc, meta in zip(
+            result.get("documents") or [],
+            result.get("metadatas") or [],
+            strict=True,
+        ):
             heading = (meta or {}).get("heading") or "Intro"
-            if heading in seen_headings:
+            if heading in seen:
                 continue
-            seen_headings.add(heading)
+            seen.add(heading)
             chosen.append({"text": doc, "heading": heading})
-            if len(chosen) >= n:
+            if len(chosen) >= target:
                 break
-    if not chosen:
-        return []
-
-    material = "\n\n".join(
-        f"[{i + 1}] ({c['heading']})\n{c['text']}"
-        for i, c in enumerate(chosen)
-    )
-    prompt = (
-        "Buat soal pilihan ganda berbahasa Indonesia berdasarkan materi "
-        "berikut. Keluarkan HANYA JSON array, tanpa teks lain. Format tiap "
-        'soal: {"question": "...", "options": ["a", "b", "c", "d"], '
-        '"answer_index": 0} dengan answer_index 0-3 menunjuk jawaban benar '
-        f"dari 4 opsi. Buat tepat {n} soal.\n\nMATERI:\n{material}"
-    )
-    try:
-        response = engine.llm.chat(
-            [{"role": "user", "content": prompt}],
-            max_tokens=min(2048, max(512, n * 220)),
+    # Pool unik tidak cukup (dokumen kecil): tambah chunk duplikat
+    # agar target soal ``n`` tetap mungkin dipenuhi via fallback.
+    if len(chosen) < target:
+        used_idx: set[int] = set()
+        extras = store.collection.get(
+            where=where, limit=target * 2, include=["documents", "metadatas"]
         )
-        questions = _parse_questions(response.text)
-        if questions:
-            return questions
-    except Exception:
-        pass
+        for idx, (doc, meta) in enumerate(
+            zip(
+                extras.get("documents") or [],
+                extras.get("metadatas") or [],
+                strict=True,
+            )
+        ):
+            if len(chosen) >= target:
+                break
+            heading = (meta or {}).get("heading") or "Intro"
+            chosen.append({"text": doc, "heading": heading})
+            used_idx.add(idx)
+    return chosen
 
-    heading = chosen[0]["heading"]
-    return [
-        {
-            "question": f"Bagian '{heading}' membahas topik apa?",
-            "options": [heading, "Topik lain", "Tidak dibahas", "Tidak tahu"],
-            "answer_index": 0,
-        }
-    ]
+
+def _chunk_to_question(chunk: dict, idx: int = 0) -> dict:
+    """Soal fallback deterministik: heading + cuplikan teks chunk.
+
+    Dipakai bila LLM mengembalikan lebih sedikit dari ``n`` atau gagal
+    parse. Cuplikan teks ditambahkan agar chunk dengan heading sama
+    (dokumen kecil) tetap menghasilkan soal unik — tanpa ini, koleksi
+    yang headingnya sedikit akan mentok di jumlah heading unik.
+    """
+    heading = chunk["heading"]
+    snippet = (chunk.get("text") or "").strip().splitlines()
+    first_line = snippet[0][:80] if snippet else ""
+    if first_line and first_line != heading:
+        question = f"Bagian '{heading}' — \"{first_line}...\" membahas apa?"
+    else:
+        question = f"Bagian '{heading}' membahas topik apa?"
+    if idx > 0:
+        question = f"{question} (cuplikan {idx + 1})"
+    return {
+        "question": question,
+        "options": [heading, "Topik lain", "Tidak dibahas", "Tidak tahu"],
+        "answer_index": 0,
+    }
 
 
 def grade_quiz(

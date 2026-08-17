@@ -197,17 +197,87 @@ def test_generate_quiz_json_and_fallback(tmp_path: Path) -> None:
         assert questions[2]["answer_index"] == 3, "answer_index di-clamp ke range opsi"
         assert llm.calls == 1
 
-        # fallback: LLM tidak mengembalikan JSON -> 1 soal sederhana dari heading
+        # fallback: LLM tidak mengembalikan JSON -> TETAP harus n soal (heading-based MCQ)
         llm_bad = FakeLLM(text="Maaf, saya tidak bisa membuat soal.")
         engine_bad = RAGEngine(store=store, llm=llm_bad)
         fallback = learning.generate_quiz(engine_bad, source="materi_jaringan.pdf", n=3)
-        assert len(fallback) == 1
-        assert "membahas" in fallback[0]["question"]
-        assert len(fallback[0]["options"]) == 4 and fallback[0]["answer_index"] == 0
+        assert len(fallback) == 3, "jumlah soal harus persis n walau LLM gagal"
+        assert all("membahas" in q["question"] for q in fallback)
+        assert all(len(q["options"]) == 4 and q["answer_index"] == 0 for q in fallback)
+        seen = {q["question"] for q in fallback}
+        assert len(seen) == 3, "soal fallback harus unik per heading"
 
         # source yang tidak ada -> tidak ada materi -> daftar kosong
         empty = learning.generate_quiz(engine, source="tidak-ada.pdf", n=3)
         assert empty == []
+    finally:
+        store.close()
+
+
+def test_generate_quiz_pads_when_llm_returns_fewer(tmp_path: Path) -> None:
+    """LLM hanya mengembalikan 1 soal walau diminta 5 -> harus tetap 5.
+
+    Regression: bug 'AI cuma kasih 1 soal' karena parser tidak retry dan
+    fallback lama cuma menghasilkan 1 soal.
+    """
+    store = _make_store(tmp_path)
+    try:
+        class OneThenZeroLLM(FakeLLM):
+            def __init__(self) -> None:
+                super().__init__(text="")
+                self._step = 0
+
+            def chat(self, messages, max_tokens=1024):
+                self.calls += 1
+                self._step += 1
+                if self._step == 1:
+                    return SimpleNamespace(
+                        text='[{"question": "Apa itu VLAN?", "options": ["a", "b", "c", "d"], "answer_index": 0}]',
+                        model="fake-model", usage=None,
+                    )
+                return SimpleNamespace(text="", model="fake-model", usage=None)
+
+        llm = OneThenZeroLLM()
+        engine = RAGEngine(store=store, llm=llm)
+        questions = learning.generate_quiz(engine, source="materi_jaringan.pdf", n=5)
+        assert len(questions) == 5, "jumlah soal harus TEPAT 5 walau LLM cuma kasih 1"
+        assert questions[0]["question"] == "Apa itu VLAN?"
+        fallback_count = sum(1 for q in questions if "membahas" in q["question"])
+        assert fallback_count == 4, "sisa 4 harus diisi fallback heading-based"
+        assert llm.calls == 2, "harus retry 1x setelah attempt pertama cuma 1 soal"
+    finally:
+        store.close()
+
+
+def test_generate_quiz_retries_then_pads(tmp_path: Path) -> None:
+    """Panggilan LLM kedua menghasilkan sisa soal (retry pakai chunk baru).
+
+    Memastikan strategi retry tidak terjebak loop kalau LLM menghasilkan 0
+    soal sama sekali — harus tetap menghasilkan n total.
+    """
+    store = _make_store(tmp_path)
+    try:
+        # Respons berurutan: 1 soal, lalu 0 soal -> fallback sisanya.
+        class SequentialLLM(FakeLLM):
+            def __init__(self) -> None:
+                super().__init__(text="")
+                self._step = 0
+
+            def chat(self, messages: list[dict], max_tokens: int = 1024) -> SimpleNamespace:
+                self.calls += 1
+                self._step += 1
+                if self._step == 1:
+                    return SimpleNamespace(
+                        text='[{"question": "Hanya 1?", "options": ["a", "b", "c", "d"], "answer_index": 0}]',
+                        model="fake-model", usage=None,
+                    )
+                return SimpleNamespace(text="", model="fake-model", usage=None)
+
+        engine = RAGEngine(store=store, llm=SequentialLLM())
+        questions = learning.generate_quiz(engine, source="materi_jaringan.pdf", n=4)
+        assert len(questions) == 4
+        assert questions[0]["question"] == "Hanya 1?"
+        assert sum(1 for q in questions if "membahas" in q["question"]) == 3
     finally:
         store.close()
 

@@ -180,6 +180,7 @@ export interface GlossaryTerm {
   verified: boolean
   created_at?: string
   updated_at?: string
+  exists?: boolean
 }
 
 export interface MindmapNode {
