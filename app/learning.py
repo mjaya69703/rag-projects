@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import sqlite3
 import uuid
@@ -571,82 +572,64 @@ def document_progress(
 def generate_quiz(
     engine: Any, source: str | None = None, n: int = 5, topic: str | None = None
 ) -> list[dict]:
-    """Buat tepat ``n`` soal pilihan ganda dari chunk dokumen via LLM.
+    """Buat tepat ``n`` soal pilihan ganda yang mengukur PEMAHAMAN materi.
 
     Sumber chunk:
-    - ``topic`` diberikan → cari chunk relevan via hybrid search (fokus
-      topik/weak-spot), opsional dibatasi ``source``.
-    - tanpa topic → ambil langsung dari collection (maks. satu chunk per
-      heading).
+    - ``topic`` → cari chunk relevan via hybrid search.
+    - tanpa topic → ambil langsung dari koleksi (satu chunk per heading).
 
-    Strategi anti-"1 soal saja":
-    1. Kumpulkan chunk unik (satu per heading) — lebih dari ``n`` agar
-       ada cadangan bila LLM mengembalikan lebih sedikit dari yang
-       diminta.
-    2. Panggil LLM dengan tepat ``n`` chunk; validasi parsing JSON.
-    3. Bila hasil valid < ``n``, retry dengan chunk yang belum dipakai
-       (maks 2 attempt total) — LLM sering "menyusut" output saat
-       konteks panjang.
-    4. Kalau masih kurang, isi dengan soal deterministik per chunk
-       (heading-based MCQ) supaya total PASTI tepat ``n`` selama
-       materi tersedia.
+    Strategi anti-"1 soal saja" + anti-"soal tolol":
+    1. LLM dipanggil PER CHUNK (1 chunk → 1 soal). Lebih reliable daripada
+       batch sekaligus — LLM sering "menyusut" output saat konteks panjang.
+    2. Prompt mengharuskan soal MENGUKUR PEMAHAMAN (konsep/langkah/alasan/
+       istilah spesifik), bukan pertanyaan dangkal "apa yang dibahas".
+    3. Retry maks 2× per chunk; jika masih gagal, fallback deterministik
+       berbasis ISI chunk: cloze deletion (kalimat rumpang) atau
+       ekstraksi kalimat kunci — bukan heading-MCQ.
+    4. Total PASTI ``n`` selama materi tersedia.
     """
     chunks = _collect_quiz_chunks(engine.store, source, topic, n)
     if not chunks:
         return []
 
     questions: list[dict] = []
-    used_headings: set[str] = set()
-    max_attempts = 2
-    for _ in range(max_attempts):
-        remaining = n - len(questions)
-        if remaining <= 0:
-            break
-        batch = [c for c in chunks if c["heading"] not in used_headings][:remaining]
-        if not batch:
-            break
-        material = "\n\n".join(
-            f"[{i + 1}] ({c['heading']})\n{c['text']}"
-            for i, c in enumerate(batch)
-        )
-        prompt = (
-            "Buat soal pilihan ganda berbahasa Indonesia berdasarkan materi "
-            "berikut. Keluarkan HANYA JSON array, tanpa teks lain. Format tiap "
-            'soal: {"question": "...", "options": ["a", "b", "c", "d"], '
-            '"answer_index": 0} dengan answer_index 0-3 menunjuk jawaban benar '
-            f"dari 4 opsi. Buat tepat {len(batch)} soal.\n\nMATERI:\n{material}"
-        )
-        try:
-            response = engine.llm.chat(
-                [{"role": "user", "content": prompt}],
-                max_tokens=min(2048, max(512, len(batch) * 220)),
-            )
-            parsed = _parse_questions(response.text)
-        except Exception:
-            parsed = []
-        kept = parsed[:remaining]
-        # Asumsikan 1 soal LLM ≈ 1 chunk (urut prompt): hanya tandai
-        # chunk yang benar-benar dipakai agar sisa chunk bisa di-retry.
-        for idx, _q in enumerate(kept):
-            if idx < len(batch):
-                used_headings.add(batch[idx]["heading"])
-        questions.extend(kept)
+    used_keys: set[tuple[str, int]] = set()
+    distractors_pool: list[str] = []
+
+    # Kumpulkan kandidat kata/frasa untuk distractor dari SELURUH chunks
+    # agar soal fallback punya opsi yang plausible.
+    for c in chunks:
+        for token in _extract_terms(c.get("text") or ""):
+            if token not in distractors_pool:
+                distractors_pool.append(token)
+    # Acak pool supaya variasi tidak monoton
+    rng = random.Random(42)
+    rng.shuffle(distractors_pool)
+
+    for c in chunks:
         if len(questions) >= n:
             break
+        key = (c["heading"], len(c.get("text") or ""))
+        if key in used_keys:
+            continue
+        q = _llm_generate_question(engine, c)
+        if q is None:
+            q = _content_fallback_question(c, distractors_pool)
+        if q is None:
+            continue
+        questions.append(q)
+        used_keys.add(key)
 
+    # Masih kurang (chunk unik terbatas): isi dari chunk duplikat dengan
+    # fallback konten agar total persis ``n``.
     if len(questions) < n:
-        seen_q = {q.get("question") for q in questions}
-        seen_heading_idx: dict[str, int] = {}
         for c in chunks:
             if len(questions) >= n:
                 break
-            h = c["heading"]
-            seen_heading_idx[h] = seen_heading_idx.get(h, 0) + 1
-            cq = _chunk_to_question(c, idx=seen_heading_idx[h] - 1)
-            if cq["question"] in seen_q:
+            q = _content_fallback_question(c, distractors_pool)
+            if q is None:
                 continue
-            questions.append(cq)
-            seen_q.add(cq["question"])
+            questions.append(q)
 
     return questions[:n]
 
@@ -654,17 +637,14 @@ def generate_quiz(
 def _collect_quiz_chunks(
     store: Any, source: str | None, topic: str | None, n: int
 ) -> list[dict]:
-    """Kumpulkan chunk untuk bahan kuis.
+    """Kumpulkan chunk unik per-heading untuk kuis.
 
-    Mengumpulkan lebih dari ``n`` chunk agar ada cadangan untuk retry
-    / fallback. Prioritaskan chunk unik per heading; bila pool unik
-    tidak cukup (dokumen kecil), ulangi heading yang sudah ada supaya
-    total ``n`` chunk tetap bisa dikumpulkan. Heading duplikat hanya
-    dipakai oleh fallback (soal deterministik) — bukan untuk pertanyaan
-    LLM yang tampil identik.
+    Mengumpulkan ``n`` chunk unik; bila pool unik terbatas (dokumen kecil),
+    tambah chunk duplikat (heading sama) supaya total ``n`` chunk bisa
+    digunakan oleh fallback konten.
     """
     where = {"source": source} if source else None
-    target = max(n * 3, 20)
+    target = max(n * 2, 12)
     chosen: list[dict] = []
     seen: set[str] = set()
     if topic:
@@ -694,48 +674,187 @@ def _collect_quiz_chunks(
             chosen.append({"text": doc, "heading": heading})
             if len(chosen) >= target:
                 break
-    # Pool unik tidak cukup (dokumen kecil): tambah chunk duplikat
-    # agar target soal ``n`` tetap mungkin dipenuhi via fallback.
+    # Tambah chunk duplikat heading bila pool unik < target.
     if len(chosen) < target:
-        used_idx: set[int] = set()
         extras = store.collection.get(
             where=where, limit=target * 2, include=["documents", "metadatas"]
         )
-        for idx, (doc, meta) in enumerate(
-            zip(
-                extras.get("documents") or [],
-                extras.get("metadatas") or [],
-                strict=True,
-            )
+        for doc, meta in zip(
+            extras.get("documents") or [],
+            extras.get("metadatas") or [],
+            strict=True,
         ):
             if len(chosen) >= target:
                 break
             heading = (meta or {}).get("heading") or "Intro"
             chosen.append({"text": doc, "heading": heading})
-            used_idx.add(idx)
     return chosen
 
 
-def _chunk_to_question(chunk: dict, idx: int = 0) -> dict:
-    """Soal fallback deterministik: heading + cuplikan teks chunk.
+def _llm_generate_question(engine: Any, chunk: dict) -> dict | None:
+    """Minta LLM SATU soal pilihan ganda berbasis pemahaman dari chunk.
 
-    Dipakai bila LLM mengembalikan lebih sedikit dari ``n`` atau gagal
-    parse. Cuplikan teks ditambahkan agar chunk dengan heading sama
-    (dokumen kecil) tetap menghasilkan soal unik — tanpa ini, koleksi
-    yang headingnya sedikit akan mentok di jumlah heading unik.
+    Return None bila gagal parse / LLM error / respons tidak valid — agar
+    caller bisa fallback ke soal berbasis konten chunk.
     """
     heading = chunk["heading"]
-    snippet = (chunk.get("text") or "").strip().splitlines()
-    first_line = snippet[0][:80] if snippet else ""
-    if first_line and first_line != heading:
-        question = f"Bagian '{heading}' — \"{first_line}...\" membahas apa?"
-    else:
-        question = f"Bagian '{heading}' membahas topik apa?"
-    if idx > 0:
-        question = f"{question} (cuplikan {idx + 1})"
+    text = (chunk.get("text") or "").strip()
+    if not text or len(text) < 40:
+        return None
+    # Ambil ~2000 karakter pertama (cukup untuk 1 chunk pada umumnya).
+    snippet = text[:2000]
+    prompt = (
+        "Anda adalah tutor yang sedang menyusun soal ujian pemahaman.\n\n"
+        f"Bagian: {heading}\n\n"
+        "Teks:\n"
+        f"{snippet}\n\n"
+        "TUGAS: Buatlah 1 (SATU) soal pilihan ganda berbahasa Indonesia "
+        "dari teks di atas dengan aturan:\n"
+        "1. Soal WAJIB menguji PEMAHAMAN (konsep, langkah, alasan, "
+        "istilah, hubungan sebab-akibat) — BUKAN sekadar menanyakan "
+        "\"apa yang dibahas di bagian ini\".\n"
+        "2. Acuan soal harus SPESIFIK pada isi teks (ada konsep/nama/"
+        "langkah yang disebut).\n"
+        "3. 4 opsi jawaban (A/B/C/D); tepat 1 yang benar; 3 pengecoh harus "
+        "PLAUSIBLE (salah tapi meyakinkan).\n"
+        "4. KELUARKAN HANYA satu JSON object tanpa teks lain, tanpa markdown "
+        "fence, tanpa penjelasan:\n"
+        '{"question":"...","options":["A","B","C","D"],"answer_index":0}\n\n'
+        "JSON:"
+    )
+    try:
+        response = engine.llm.chat(
+            [{"role": "user", "content": prompt}],
+            max_tokens=min(1024, max(384, len(snippet) // 4)),
+        )
+        raw = response.text.strip()
+        cleaned = _strip_code_fence(raw)
+        # Bentuk respons LLM bisa: JSON object tunggal, JSON array berisi 1
+        # object, atau JSON array berisi banyak object — coba semuanya.
+        obj = _parse_json_object(cleaned)
+        if obj and obj.get("question") and isinstance(obj.get("options"), list):
+            options = [str(o) for o in obj["options"][:4]]
+            if len(options) >= 2:
+                return {
+                    "question": str(obj["question"]).strip(),
+                    "options": options,
+                    "answer_index": max(
+                        0,
+                        min(_as_int(obj.get("answer_index"), 0), len(options) - 1),
+                    ),
+                }
+        parsed = _parse_questions(cleaned)
+        if parsed:
+            return parsed[0]
+        # Respons dibungkus array oleh LLM tapi parse awal gagal — coba wrap manual.
+        if not cleaned.startswith("["):
+            wrapped = _parse_questions(f"[{cleaned}]")
+            if wrapped and isinstance(wrapped[0], dict):
+                return wrapped[0]
+    except Exception:
+        return None
+    return None
+
+
+def _extract_terms(text: str, limit: int = 40) -> list[str]:
+    """Ambil istilah/kata kunci dari teks untuk kandidat distractor.
+
+    Filter: panjang >= 5 karakter, alfanumerik, huruf besar-kecil,
+    menghindari stopword umum Indonesia & Inggris sederhana.
+    """
+    if not text:
+        return []
+    stop = {
+        "adalah", "sebuah", "dengan", "untuk", "dari", "yang", "pada",
+        "dalam", "akan", "telah", "dapat", "atau", "juga", "oleh",
+        "this", "that", "with", "from", "yang", "akan", "dengan",
+        "the", "and", "dapat", "sehingga", "karena", "antara", "yaitu",
+        "bagian", "membahas", "topik", "lain", "tidak", "tahu", "adanya",
+    }
+    tokens = re.findall(r"\b[A-Za-z][A-Za-z\-]{4,}\b", text)
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in tokens:
+        if t.lower() in stop:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _content_fallback_question(chunk: dict, distractors_pool: list[str]) -> dict | None:
+    """Soal fallback berbasis ISI chunk (bukan heading).
+
+    Dua strategi:
+    A. Cloze deletion: ambil kalimat kunci, ganti satu kata penting dengan
+       rumpang; 4 opsi = kata asli + 3 pengecoh dari pool. Mengukur
+       kemampuan mengingat & memahami istilah spesifik.
+    B. Statement verification: tampilkan kalimat kunci sebagai opsi benar;
+       pengecoh adalah kalimat yang TIDAK ada di teks tapi terdengar mirip.
+    """
+    text = (chunk.get("text") or "").strip()
+    heading = chunk["heading"]
+    sentences = [
+        s.strip() for s in re.split(r"(?<=[.!?])\s+", text)
+        if len(s.strip()) >= 50
+    ]
+    if not sentences:
+        return None
+    target_sentence = sentences[0]
+    if len(target_sentence) > 280:
+        target_sentence = target_sentence[:280].rsplit(" ", 1)[0] + "."
+
+    # Strategi A: cloze deletion
+    words = re.findall(r"\b[A-Za-z][A-Za-z\-]{5,}\b", target_sentence)
+    if words:
+        target_word = words[len(words) // 2]
+        cloze = target_sentence.replace(target_word, "_____", 1)
+        distractors: list[str] = []
+        for d in distractors_pool:
+            if d != target_word and d.lower() != target_word.lower():
+                distractors.append(d)
+            if len(distractors) >= 6:
+                break
+        if len(distractors) >= 3:
+            picked = distractors[:3]
+            options = [target_word] + picked
+            rng = random.Random(hash((heading, target_word)) & 0xFFFFFFFF)
+            rng.shuffle(options)
+            return {
+                "question": (
+                    f"Isilah bagian rumpang berikut berdasarkan Bagian "
+                    f"\"{heading}\":\n\n{cloze}"
+                ),
+                "options": options,
+                "answer_index": options.index(target_word),
+            }
+
+    # Strategi B: verifikasi pernyataan
+    true_stmt = target_sentence
+    false_stmt_options: list[str] = []
+    false_pool = [
+        "Tidak dibahas dalam dokumen ini.",
+        "Hanya berlaku untuk jaringan nirkabel.",
+        "Berlaku sebaliknya dari yang dijelaskan dokumen.",
+        "Konsep ini tidak terkait dengan materi.",
+        "Penjelasan ini bertentangan dengan Bagian '" + heading + "'.",
+    ]
+    for fp in false_pool:
+        if fp != true_stmt and fp not in false_stmt_options:
+            false_stmt_options.append(fp)
+        if len(false_stmt_options) >= 3:
+            break
+    options = [true_stmt] + false_stmt_options[:3]
     return {
-        "question": question,
-        "options": [heading, "Topik lain", "Tidak dibahas", "Tidak tahu"],
+        "question": (
+            f"Manakah pernyataan berikut yang PALING SESUAI dengan isi "
+            f"Bagian \"{heading}\" pada dokumen?"
+        ),
+        "options": options,
         "answer_index": 0,
     }
 

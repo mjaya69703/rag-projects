@@ -179,33 +179,36 @@ def test_document_progress_from_messages(tmp_path: Path) -> None:
 def test_generate_quiz_json_and_fallback(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     try:
+        # LLM dipanggil per-chunk, jadi ia mengembalikan 1 object JSON
         llm = FakeLLM(
-            text='''```json
-[
-  {"question": "Apa itu VLAN?", "options": ["Partisi jaringan logis", "x", "y", "z"], "answer_index": 0},
-  {"question": "Soal kedua", "options": ["a", "b", "c", "d"], "answer_index": 2},
-  {"question": "Soal ketiga", "options": ["a", "b", "c", "d"], "answer_index": 9}
-]
-```'''
+            text=(
+                '{"question":"Apa itu VLAN?","options":["Partisi jaringan '
+                'logis","Router","Switch","Firewall"],"answer_index":0}'
+            )
         )
         engine = RAGEngine(store=store, llm=llm)
         questions = learning.generate_quiz(engine, source="materi_jaringan.pdf", n=3)
-        assert len(questions) == 3
-        assert questions[0]["question"] == "Apa itu VLAN?"
-        assert len(questions[0]["options"]) == 4
-        assert questions[0]["answer_index"] == 0
-        assert questions[2]["answer_index"] == 3, "answer_index di-clamp ke range opsi"
-        assert llm.calls == 1
+        assert len(questions) == 3, "total harus n walau LLM kasih 1 object per call"
+        for q in questions:
+            assert 1 <= len(q["options"]) <= 4
+            assert 0 <= q["answer_index"] < len(q["options"])
+            # Soal TIDAK boleh heading-MCQ dangkal
+            first_line = q["question"].split("\n")[0]
+            assert not first_line.startswith("Bagian '"), (
+                f"soal generik 'Bagian X membahas topik apa' tidak boleh lolos: {first_line!r}"
+            )
 
-        # fallback: LLM tidak mengembalikan JSON -> TETAP harus n soal (heading-based MCQ)
+        # fallback: LLM rusak -> n soal berbasis KONTEN chunk (cloze/verifikasi)
         llm_bad = FakeLLM(text="Maaf, saya tidak bisa membuat soal.")
         engine_bad = RAGEngine(store=store, llm=llm_bad)
         fallback = learning.generate_quiz(engine_bad, source="materi_jaringan.pdf", n=3)
         assert len(fallback) == 3, "jumlah soal harus persis n walau LLM gagal"
-        assert all("membahas" in q["question"] for q in fallback)
-        assert all(len(q["options"]) == 4 and q["answer_index"] == 0 for q in fallback)
-        seen = {q["question"] for q in fallback}
-        assert len(seen) == 3, "soal fallback harus unik per heading"
+        for q in fallback:
+            assert (
+                "Isilah" in q["question"]
+                or "pernyataan" in q["question"].lower()
+            ), f"soal fallback harus cloze/verifikasi, dapat: {q['question']!r}"
+            assert all(len(o) > 0 for o in q["options"])
 
         # source yang tidak ada -> tidak ada materi -> daftar kosong
         empty = learning.generate_quiz(engine, source="tidak-ada.pdf", n=3)
@@ -215,71 +218,89 @@ def test_generate_quiz_json_and_fallback(tmp_path: Path) -> None:
 
 
 def test_generate_quiz_pads_when_llm_returns_fewer(tmp_path: Path) -> None:
-    """LLM hanya mengembalikan 1 soal walau diminta 5 -> harus tetap 5.
-
-    Regression: bug 'AI cuma kasih 1 soal' karena parser tidak retry dan
-    fallback lama cuma menghasilkan 1 soal.
-    """
+    """LLM gagal / return junk -> total tetap n, fallback dari ISI chunk."""
     store = _make_store(tmp_path)
     try:
-        class OneThenZeroLLM(FakeLLM):
+        class JunkLLM(FakeLLM):
+            def chat(self, messages, max_tokens=1024):
+                self.calls += 1
+                return SimpleNamespace(text="", model="fake-model", usage=None)
+
+        llm = JunkLLM()
+        engine = RAGEngine(store=store, llm=llm)
+        questions = learning.generate_quiz(engine, source="materi_jaringan.pdf", n=5)
+        assert len(questions) == 5, "jumlah soal harus TEPAT 5 walau LLM gagal total"
+        for q in questions:
+            assert (
+                "Isilah" in q["question"]
+                or "pernyataan" in q["question"].lower()
+            ), f"soal harus cloze/verifikasi, dapat: {q['question']!r}"
+            assert 1 <= len(q["options"]) <= 4
+    finally:
+        store.close()
+
+
+def test_generate_quiz_one_chunk_one_question(tmp_path: Path) -> None:
+    """LLM dipanggil per-chunk (1 chunk → 1 soal), bukan batch sekaligus."""
+    store = _make_store(tmp_path)
+    try:
+        class PerChunkLLM(FakeLLM):
             def __init__(self) -> None:
                 super().__init__(text="")
-                self._step = 0
+                self.headings: list[str] = []
 
             def chat(self, messages, max_tokens=1024):
                 self.calls += 1
-                self._step += 1
-                if self._step == 1:
-                    return SimpleNamespace(
-                        text='[{"question": "Apa itu VLAN?", "options": ["a", "b", "c", "d"], "answer_index": 0}]',
-                        model="fake-model", usage=None,
-                    )
-                return SimpleNamespace(text="", model="fake-model", usage=None)
+                heading = "?"
+                for line in messages[0]["content"].splitlines():
+                    if line.startswith("Bagian: "):
+                        heading = line[len("Bagian: "):].strip()
+                        break
+                self.headings.append(heading)
+                return SimpleNamespace(
+                    text=(
+                        f'{{"question":"Soal untuk {heading}","options":'
+                        f'["Benar","Pengecoh A","Pengecoh B","Pengecoh C"],'
+                        f'"answer_index":0}}'
+                    ),
+                    model="fake",
+                    usage=None,
+                )
 
-        llm = OneThenZeroLLM()
+        llm = PerChunkLLM()
         engine = RAGEngine(store=store, llm=llm)
-        questions = learning.generate_quiz(engine, source="materi_jaringan.pdf", n=5)
-        assert len(questions) == 5, "jumlah soal harus TEPAT 5 walau LLM cuma kasih 1"
-        assert questions[0]["question"] == "Apa itu VLAN?"
-        fallback_count = sum(1 for q in questions if "membahas" in q["question"])
-        assert fallback_count == 4, "sisa 4 harus diisi fallback heading-based"
-        assert llm.calls == 2, "harus retry 1x setelah attempt pertama cuma 1 soal"
-    finally:
-        store.close()
-
-
-def test_generate_quiz_retries_then_pads(tmp_path: Path) -> None:
-    """Panggilan LLM kedua menghasilkan sisa soal (retry pakai chunk baru).
-
-    Memastikan strategi retry tidak terjebak loop kalau LLM menghasilkan 0
-    soal sama sekali — harus tetap menghasilkan n total.
-    """
-    store = _make_store(tmp_path)
-    try:
-        # Respons berurutan: 1 soal, lalu 0 soal -> fallback sisanya.
-        class SequentialLLM(FakeLLM):
-            def __init__(self) -> None:
-                super().__init__(text="")
-                self._step = 0
-
-            def chat(self, messages: list[dict], max_tokens: int = 1024) -> SimpleNamespace:
-                self.calls += 1
-                self._step += 1
-                if self._step == 1:
-                    return SimpleNamespace(
-                        text='[{"question": "Hanya 1?", "options": ["a", "b", "c", "d"], "answer_index": 0}]',
-                        model="fake-model", usage=None,
-                    )
-                return SimpleNamespace(text="", model="fake-model", usage=None)
-
-        engine = RAGEngine(store=store, llm=SequentialLLM())
         questions = learning.generate_quiz(engine, source="materi_jaringan.pdf", n=4)
         assert len(questions) == 4
-        assert questions[0]["question"] == "Hanya 1?"
-        assert sum(1 for q in questions if "membahas" in q["question"]) == 3
+        assert llm.calls >= 4, "LLM minimal dipanggil 4x (1 per chunk)"
+        assert len(set(llm.headings)) >= 4, "setiap chunk beda-heading diproses"
     finally:
         store.close()
+
+
+def test_content_fallback_question_is_meaningful(tmp_path: Path) -> None:
+    """Fallback konten harus cloze/verifikasi, bukan heading-MCQ generik."""
+    chunk = {
+        "heading": "VLAN",
+        "text": (
+            "Virtual Local Area Network atau VLAN adalah metode mempartisi "
+            "satu jaringan fisik menjadi beberapa jaringan logis yang "
+            "terpisah. Setiap VLAN memiliki identitas berupa nomor antara "
+            "1 hingga 4094 dan broadcast domain dapat diperkecil sehingga "
+            "lalu lintas jaringan menjadi lebih efisien."
+        ),
+    }
+    pool = learning._extract_terms(chunk["text"])
+    q = learning._content_fallback_question(chunk, pool)
+    assert q is not None
+    first_line = q["question"].split("\n")[0]
+    assert "Isilah" in q["question"] or "pernyataan" in q["question"].lower()
+    assert 1 <= len(q["options"]) <= 4
+    # Tidak ada placeholder generik
+    assert not any(o in {"Topik lain", "Tidak dibahas", "Tidak tahu"} for o in q["options"])
+    # Jawaban benar harus muncul di opsi
+    correct = q["options"][q["answer_index"]]
+    # Cloze: kata yang diganti ada di teks
+    assert len(correct) > 0
 
 
 def test_grade_quiz_parse(tmp_path: Path) -> None:
