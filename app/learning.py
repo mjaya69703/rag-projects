@@ -614,6 +614,10 @@ def generate_quiz(
             continue
         q = _llm_generate_question(engine, c)
         if q is None:
+            # Retry dengan prompt lebih sederhana — model lemah sering
+            # gagal di prompt panjang.
+            q = _llm_generate_question(engine, c, simple=True)
+        if q is None:
             q = _content_fallback_question(c, distractors_pool)
         if q is None:
             continue
@@ -691,8 +695,11 @@ def _collect_quiz_chunks(
     return chosen
 
 
-def _llm_generate_question(engine: Any, chunk: dict) -> dict | None:
+def _llm_generate_question(engine: Any, chunk: dict, simple: bool = False) -> dict | None:
     """Minta LLM SATU soal pilihan ganda berbasis pemahaman dari chunk.
+
+    ``simple=True`` pakai prompt ringkas untuk model yang gagal di prompt
+    panjang; default pakai prompt tutor lengkap.
 
     Return None bila gagal parse / LLM error / respons tidak valid — agar
     caller bisa fallback ke soal berbasis konten chunk.
@@ -701,27 +708,35 @@ def _llm_generate_question(engine: Any, chunk: dict) -> dict | None:
     text = (chunk.get("text") or "").strip()
     if not text or len(text) < 40:
         return None
-    # Ambil ~2000 karakter pertama (cukup untuk 1 chunk pada umumnya).
-    snippet = text[:2000]
-    prompt = (
-        "Anda adalah tutor yang sedang menyusun soal ujian pemahaman.\n\n"
-        f"Bagian: {heading}\n\n"
-        "Teks:\n"
-        f"{snippet}\n\n"
-        "TUGAS: Buatlah 1 (SATU) soal pilihan ganda berbahasa Indonesia "
-        "dari teks di atas dengan aturan:\n"
-        "1. Soal WAJIB menguji PEMAHAMAN (konsep, langkah, alasan, "
-        "istilah, hubungan sebab-akibat) — BUKAN sekadar menanyakan "
-        "\"apa yang dibahas di bagian ini\".\n"
-        "2. Acuan soal harus SPESIFIK pada isi teks (ada konsep/nama/"
-        "langkah yang disebut).\n"
-        "3. 4 opsi jawaban (A/B/C/D); tepat 1 yang benar; 3 pengecoh harus "
-        "PLAUSIBLE (salah tapi meyakinkan).\n"
-        "4. KELUARKAN HANYA satu JSON object tanpa teks lain, tanpa markdown "
-        "fence, tanpa penjelasan:\n"
-        '{"question":"...","options":["A","B","C","D"],"answer_index":0}\n\n'
-        "JSON:"
-    )
+    # Mode simple: cuplikan lebih pendek + prompt tanpa basa-basi.
+    snippet = text[:800] if simple else text[:2000]
+    if simple:
+        prompt = (
+            f"Dari teks:\n\n{snippet}\n\n"
+            "Buat 1 soal pilihan ganda bahasa Indonesia yang menguji "
+            "pemahaman. 4 opsi (A/B/C/D), 1 benar. Jawab HANYA JSON:\n"
+            '{"question":"...","options":["A","B","C","D"],"answer_index":0}'
+        )
+    else:
+        prompt = (
+            "Anda adalah tutor yang sedang menyusun soal ujian pemahaman.\n\n"
+            f"Bagian: {heading}\n\n"
+            "Teks:\n"
+            f"{snippet}\n\n"
+            "TUGAS: Buatlah 1 (SATU) soal pilihan ganda berbahasa Indonesia "
+            "dari teks di atas dengan aturan:\n"
+            "1. Soal WAJIB menguji PEMAHAMAN (konsep, langkah, alasan, "
+            "istilah, hubungan sebab-akibat) — BUKAN sekadar menanyakan "
+            "\"apa yang dibahas di bagian ini\".\n"
+            "2. Acuan soal harus SPESIFIK pada isi teks (ada konsep/nama/"
+            "langkah yang disebut).\n"
+            "3. 4 opsi jawaban (A/B/C/D); tepat 1 yang benar; 3 pengecoh harus "
+            "PLAUSIBLE (salah tapi meyakinkan).\n"
+            "4. KELUARKAN HANYA satu JSON object tanpa teks lain, tanpa markdown "
+            "fence, tanpa penjelasan:\n"
+            '{"question":"...","options":["A","B","C","D"],"answer_index":0}\n\n'
+            "JSON:"
+        )
     try:
         response = engine.llm.chat(
             [{"role": "user", "content": prompt}],
@@ -732,26 +747,30 @@ def _llm_generate_question(engine: Any, chunk: dict) -> dict | None:
         # Bentuk respons LLM bisa: JSON object tunggal, JSON array berisi 1
         # object, atau JSON array berisi banyak object — coba semuanya.
         obj = _parse_json_object(cleaned)
-        if obj and obj.get("question") and isinstance(obj.get("options"), list):
-            options = [str(o) for o in obj["options"][:4]]
-            if len(options) >= 2:
-                return {
-                    "question": str(obj["question"]).strip(),
-                    "options": options,
-                    "answer_index": max(
-                        0,
-                        min(_as_int(obj.get("answer_index"), 0), len(options) - 1),
-                    ),
-                }
+        if obj:
+            normalized = _normalize_question_dict(obj)
+            if normalized:
+                return normalized
         parsed = _parse_questions(cleaned)
         if parsed:
-            return parsed[0]
+            for item in parsed:
+                normalized = _normalize_question_dict(item)
+                if normalized:
+                    return normalized
         # Respons dibungkus array oleh LLM tapi parse awal gagal — coba wrap manual.
         if not cleaned.startswith("["):
             wrapped = _parse_questions(f"[{cleaned}]")
             if wrapped and isinstance(wrapped[0], dict):
-                return wrapped[0]
-    except Exception:
+                normalized = _normalize_question_dict(wrapped[0])
+                if normalized:
+                    return normalized
+        logger.warning(
+            "quiz LLM: parse gagal, fallback konten untuk heading=%r len_raw=%d",
+            heading, len(raw),
+        )
+        logger.debug("quiz LLM raw: %s", raw[:600])
+    except Exception as exc:
+        logger.warning("quiz LLM exception untuk heading=%r: %s", heading, exc)
         return None
     return None
 
@@ -1713,6 +1732,55 @@ def _as_int(value: Any, default: int) -> int:
         return int(match.group(0)) if match else default
 
 
+def _normalize_question_dict(obj: dict) -> dict | None:
+    """Normalisasi dict hasil parse LLM jadi shape soal quiz.
+
+    Menerima variasi key umum: ``answer_index``/``answer``/``correct``/
+    ``correct_index``/``correct_answer_index``; ``options``/``choices``/
+    ``answers``/``alternatives``. Lewati jika field esensial hilang.
+    """
+    question = (
+        obj.get("question")
+        or obj.get("q")
+        or obj.get("pertanyaan")
+        or obj.get("soal")
+    )
+    options = (
+        obj.get("options")
+        or obj.get("choices")
+        or obj.get("answers")
+        or obj.get("alternatives")
+        or obj.get("opsi")
+    )
+    if not isinstance(question, str) or not question.strip():
+        return None
+    if not isinstance(options, list):
+        return None
+    clean_options = [str(o).strip() for o in options if str(o).strip()][:4]
+    if len(clean_options) < 2:
+        return None
+    raw_answer = (
+        obj.get("answer_index")
+        if "answer_index" in obj
+        else (
+            obj.get("correct_index")
+            or obj.get("answer")
+            or obj.get("correct")
+            or obj.get("correct_answer")
+            or obj.get("correct_answer_index")
+            or obj.get("jawaban_benar")
+            or 0
+        )
+    )
+    answer_index = _as_int(raw_answer, 0)
+    answer_index = max(0, min(answer_index, len(clean_options) - 1))
+    return {
+        "question": question.strip(),
+        "options": clean_options,
+        "answer_index": answer_index,
+    }
+
+
 def _strip_code_fence(text: str) -> str:
     """Buang fence markdown ```json ... ``` bila ada."""
     lines = text.splitlines()
@@ -1751,7 +1819,12 @@ def _parse_json_array(text: str) -> list[Any] | None:
 
 
 def _parse_json_object(text: str) -> dict[str, Any] | None:
-    """Parse teks LLM jadi JSON object, toleran fence / teks tambahan."""
+    """Parse teks LLM jadi JSON object, toleran fence / teks tambahan.
+
+    Pakai regex NON-GREEDY agar objek dalam yang disisipkan di teks
+    panjang (penjelasan tambahan LLM) tidak bikin match greedy menelan
+    terlalu banyak karakter dan menghasilkan JSON invalid.
+    """
     text = text.strip()
     try:
         data = json.loads(text)
@@ -1766,14 +1839,25 @@ def _parse_json_object(text: str) -> dict[str, Any] | None:
                 return data
         except json.JSONDecodeError:
             pass
-    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
-    if match:
-        try:
-            data = json.loads(match.group(0))
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            pass
+    # Cari object JSON pertama yang balanced (handle brace seimbang).
+    for start in (m.start() for m in re.finditer(r"\{", cleaned)):
+        depth = 0
+        end = -1
+        for i in range(start, len(cleaned)):
+            if cleaned[i] == "{":
+                depth += 1
+            elif cleaned[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end > 0:
+            try:
+                data = json.loads(cleaned[start:end])
+                if isinstance(data, dict):
+                    return data
+            except json.JSONDecodeError:
+                continue
     return None
 
 

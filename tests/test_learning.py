@@ -303,6 +303,76 @@ def test_content_fallback_question_is_meaningful(tmp_path: Path) -> None:
     assert len(correct) > 0
 
 
+def test_normalize_question_dict_accepts_key_variants(tmp_path: Path) -> None:
+    """Berbagai variasi key dari LLM: ``answer``/``correct``/``choices`` dll."""
+    cases = [
+        # answer_index + options (standar)
+        ({"question": "Q?", "options": ["a", "b"], "answer_index": 1},
+         {"question": "Q?", "options": ["a", "b"], "answer_index": 1}),
+        # answer (0-based OK + choices)
+        ({"question": "Q?", "choices": ["a", "b", "c", "d"], "answer": 2},
+         {"question": "Q?", "options": ["a", "b", "c", "d"], "answer_index": 2}),
+        # correct + answers
+        ({"question": "Q?", "answers": ["x", "y"], "correct": 0},
+         {"question": "Q?", "options": ["x", "y"], "answer_index": 0}),
+        # alias bahasa: pertanyaan + opsi
+        ({"pertanyaan": "Q?", "opsi": ["a", "b", "c"], "jawaban_benar": 2},
+         {"question": "Q?", "options": ["a", "b", "c"], "answer_index": 2}),
+        # answer_index out of range di-clamp
+        ({"question": "Q?", "options": ["a", "b"], "answer_index": 99},
+         {"question": "Q?", "options": ["a", "b"], "answer_index": 1}),
+    ]
+    for raw, expected in cases:
+        out = learning._normalize_question_dict(raw)
+        assert out == expected, f"normalize gagal untuk {raw!r}"
+
+
+def test_parse_json_object_handles_balanced_braces_in_text(tmp_path: Path) -> None:
+    """Object JSON yang disisipkan di teks panjang + object kedua (reject)."""
+    text = (
+        'Berikut soalnya:\n'
+        '{"question":"Q1?","options":["a","b"],"answer_index":0}\n'
+        'Semoga membantu!\n'
+    )
+    obj = learning._parse_json_object(text)
+    assert obj == {"question": "Q1?", "options": ["a", "b"], "answer_index": 0}
+
+
+def test_llm_generate_question_recovers_from_alternative_keys(tmp_path: Path) -> None:
+    """LLM server kadang pakai key alternatif (``correct``/``choices``) —
+    parser harus recover dan tetap menghasilkan soal utuh, bukan fallback."""
+    store = _make_store(tmp_path)
+    try:
+        # Mock LLM yang ngirim key alternatif
+        class AltKeyLLM:
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, messages, max_tokens=1024):
+                self.calls += 1
+                # Bentuk: object dengan key alternatif + prose di depan
+                return SimpleNamespace(
+                    text=(
+                        'Berikut soalnya:\n'
+                        '{"pertanyaan":"Apa fungsi VLAN?","choices":'
+                        '["Memisahkan domain broadcast","Memperbesar broadcast",'
+                        '"Menghapus router","Mengaktifkan DHCP"],"jawaban_benar":0}\n'
+                        'Catatan: ini hanya contoh.'
+                    ),
+                    model="fake", usage=None,
+                )
+
+        llm = AltKeyLLM()
+        engine = RAGEngine(store=store, llm=llm)
+        questions = learning.generate_quiz(engine, source="materi_jaringan.pdf", n=2)
+        assert len(questions) == 2
+        # Soal pertama bukan fallback (karena LLM berhasil parse)
+        assert "VLAN" in questions[0]["question"]
+        assert questions[0]["options"][0] == "Memisahkan domain broadcast"
+    finally:
+        store.close()
+
+
 def test_grade_quiz_parse(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     try:
