@@ -47,6 +47,7 @@ import logging.handlers
 import shutil
 import sqlite3
 import statistics
+import tempfile
 import threading
 import time
 import uuid
@@ -65,12 +66,12 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 from starlette.routing import Match
 
-from app import annotations, db, glossary, learning, push
+from app import annotations, db, direct_mode, glossary, learning, push
 from app.config import (
     CORS_ORIGINS,
     MAX_UPLOAD_MB,
@@ -241,6 +242,8 @@ class QueryRequest(BaseModel):
     session_id: str | None = None
     mode: str = Field(default="sliding", pattern="^(sliding|summary)$")
     history_n: int = Field(default=SLIDING_WINDOW_DEFAULT, ge=1, le=50)
+    direct: bool = False  # mode bypass: baca dokumen utuh + pengetahuan AI
+    web: bool = False  # akses internet (web search) — berlaku juga utk direct
 
 
 class RenameRequest(BaseModel):
@@ -701,9 +704,7 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/metrics")
-def metrics() -> dict:
-    """Metrik operasional: counter, latensi p50/p95, disk, ingestion."""
+def _metrics_dict() -> dict:
     m = dict(getattr(app.state, "metrics", {}))
     latency = m.pop("latency_ms", None)
     if latency:
@@ -726,13 +727,93 @@ def metrics() -> dict:
     return m
 
 
+def _prometheus_text(m: dict) -> str:
+    """Render metrik sebagai text/plain exposition format Prometheus."""
+    lines = ["# HELP rag_metrics Metrik operasional RAG app."]
+    lines.append("# TYPE rag_metrics gauge")
+    # Kategori lalu lintas
+    for key in ("requests", "queries", "cache_hits", "cache_misses", "llm_errors"):
+        lines.append(f'rag_{key}{{}} {int(m.get(key, 0))}')
+    # Latensi (detik, Prometheus konvensi)
+    for key in ("latency_ms_p50", "latency_ms_p95"):
+        if key in m:
+            lines.append(f"rag_{key}{{}} {m[key]}")
+    lines.append(f"rag_latency_ms_window{{}} {int(m.get('latency_ms_window', 0))}")
+    # Ingestion
+    for key in ("pending", "ready", "total", "failed"):
+        if "ingestion" in m and key in m["ingestion"]:
+            lines.append(f"rag_ingestion_{key}{{}} {int(m['ingestion'][key])}")
+    # Uptime & disk
+    lines.append(f"rag_uptime_sec{{}} {m.get('uptime_sec', 0)}")
+    for key in ("persist_free_mb", "persist_total_mb"):
+        if "disk" in m and key in m["disk"]:
+            lines.append(f"rag_disk_{key}{{}} {m['disk'][key]}")
+    return "\n".join(lines) + "\n"
+
+
+@app.get("/metrics")
+def metrics(format: str = "json") -> Response:
+    """Metrik operasional: counter, latensi p50/p95, disk, ingestion.
+
+    `?format=prometheus` (atau Accept: text/plain) mengembalikan
+    text/plain exposition format agar bisa discrape Prometheus/Grafana.
+    """
+    m = _metrics_dict()
+    if format.lower() == "prometheus":
+        return Response(
+            content=_prometheus_text(m),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+    return JSONResponse(m)
+
+
+# ----------------------------------------------------------------------
+# Backup / restore data lokal (ZIP portabel)
+# ----------------------------------------------------------------------
+@app.get("/backup")
+def backup_download() -> Response:
+    """Unduh ZIP berisi seluruh data lokal (SQLite + ChromaDB)."""
+    from app import backup as backup_mod
+
+    settings: Settings = app.state.settings
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        zip_path = backup_mod.create_backup(settings, tmp)
+        data = zip_path.read_bytes()
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_path.name}"',
+        },
+    )
+
+
+@app.post("/backup/restore")
+def backup_restore(file: UploadFile = File(...)) -> dict:
+    """Terapkan ZIP backup ke penyimpanan live (SQLite + ChromaDB)."""
+    from app import backup as backup_mod
+
+    settings: Settings = app.state.settings
+    archive = file.file.read()
+    if not archive:
+        raise HTTPException(status_code=400, detail="File backup kosong.")
+    try:
+        return backup_mod.restore_backup(settings, archive)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
 @app.get("/audit")
-def audit_log(limit: int = 50) -> dict:
+def audit_log(limit: int = 50, offset: int = 0) -> dict:
     """Audit log aksi API terproteksi (P0-02). Hanya lewat token."""
     settings: Settings = app.state.settings
+    entries = db.list_audit(settings.db_path, limit=limit, offset=offset)
     return {
         "status": "ok",
-        "entries": db.list_audit(settings.db_path, limit=limit),
+        "entries": entries,
+        "total": db.count_audit(settings.db_path),
+        "offset": max(0, offset),
+        "limit": max(1, limit),
     }
 
 
@@ -1103,6 +1184,81 @@ def query(req: QueryRequest) -> dict:
     settings: Settings = app.state.settings
     ctx = _prepare_query(engine, settings, req)
 
+    # Mode langsung (bypass): baca dokumen utuh + pengetahuan AI + web.
+    if req.direct:
+        doc_text = direct_mode.full_document_text(
+            settings, app.state.store, req.source
+        )
+        web_results: list[dict] = []
+        web_text = None
+        if req.web:
+            web_results = direct_mode.web_search(req.question)
+            web_text = direct_mode._format_web(web_results)
+
+        if ctx["session_info"] is not None:
+            db.add_message(settings.db_path, req.session_id, "user", req.question, [])
+        try:
+            resp = direct_mode.direct_answer(
+                engine.llm,
+                req.question,
+                doc_text,
+                web_text,
+                ctx["history"],
+                ctx["summary"],
+            )
+        except LLMError as exc:
+            app.state.metrics["llm_errors"] += 1
+            raise HTTPException(status_code=502, detail=str(exc)) from None
+
+        direct_sources: list[dict] = []
+        if doc_text:
+            direct_sources.append(
+                {
+                    "source": req.source or "",
+                    "page": None,
+                    "heading": "Dokumen utuh (mode langsung)",
+                    "text": doc_text[:500],
+                    "distance": 0.0,
+                    "chunk_index": -1,
+                }
+            )
+        direct_sources.extend(
+            {
+                "source": "Web",
+                "page": None,
+                "heading": r.get("title", ""),
+                "text": r.get("snippet", ""),
+                "distance": 0.0,
+                "chunk_index": -1,
+            }
+            for r in web_results
+        )
+
+        session_info = ctx["session_info"]
+        if session_info is not None:
+            db.add_message(
+                settings.db_path,
+                req.session_id,
+                "assistant",
+                resp.text,
+                direct_sources,
+            )
+            session_info = _post_query_tasks(
+                engine, settings.db_path, req.session_id, req.question
+            )
+        return {
+            "status": "ok",
+            "answer": resp.text,
+            "cached": False,
+            "model": resp.model,
+            "sources": direct_sources,
+            "grounded": True,
+            "direct": True,
+            "has_document": bool(doc_text),
+            "has_web": bool(web_text),
+            "session": session_info,
+        }
+
     if ctx["missing"]:
         missing = ctx["missing"]
         if ctx["session_info"] is not None:
@@ -1125,6 +1281,12 @@ def query(req: QueryRequest) -> dict:
     if ctx["session_info"] is not None:
         db.add_message(settings.db_path, req.session_id, "user", req.question, [])
 
+    extra_context = None
+    if req.web:
+        extra_context = direct_mode._format_web(
+            direct_mode.web_search(req.question)
+        )
+
     try:
         answer = engine.query(
             req.question,
@@ -1132,6 +1294,7 @@ def query(req: QueryRequest) -> dict:
             where=ctx["where"],
             history=ctx["history"],
             summary=ctx["summary"],
+            extra_context=extra_context,
         )
     except LLMError as exc:
         app.state.metrics["llm_errors"] += 1
@@ -1176,6 +1339,89 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
     ctx = _prepare_query(engine, settings, req)
     session_info = ctx["session_info"]
 
+    # Mode langsung (bypass) — streaming: baca dokumen utuh + web search.
+    if req.direct:
+        doc_text = direct_mode.full_document_text(
+            settings, app.state.store, req.source
+        )
+        metrics = app.state.metrics
+
+        async def direct_gen():
+            web_text = None
+            if req.web:
+                web_text = direct_mode._format_web(
+                    await direct_mode.web_search_async(req.question)
+                )
+            if session_info is not None:
+                db.add_message(
+                    settings.db_path, req.session_id, "user", req.question, []
+                )
+            full_answer = ""
+            sources_json: list[dict] = []
+            try:
+                async for ev in direct_mode.stream_direct(
+                    engine.llm,
+                    req.question,
+                    doc_text,
+                    web_text,
+                    ctx["history"],
+                    ctx["summary"],
+                ):
+                    if ev["type"] == "meta":
+                        sources_json = [
+                            {
+                                "source": req.source or "",
+                                "page": None,
+                                "heading": "Dokumen utuh (mode langsung)",
+                                "text": (doc_text or "")[:500],
+                                "distance": 0.0,
+                                "chunk_index": -1,
+                            }
+                        ] if doc_text else []
+                        yield _sse(
+                            {
+                                "type": "meta",
+                                "cached": False,
+                                "grounded": True,
+                                "direct": True,
+                                "has_document": bool(doc_text),
+                                "has_web": bool(web_text),
+                                "sources": sources_json,
+                            }
+                        )
+                    elif ev["type"] == "delta":
+                        full_answer += ev["text"]
+                        yield _sse({"type": "delta", "text": ev["text"]})
+                    elif ev["type"] == "done":
+                        full_answer = ev["answer"] or full_answer
+                final_session = session_info
+                if session_info is not None:
+                    db.add_message(
+                        settings.db_path,
+                        req.session_id,
+                        "assistant",
+                        full_answer,
+                        sources_json,
+                    )
+                    final_session = _post_query_tasks(
+                        engine, settings.db_path, req.session_id, req.question
+                    )
+                yield _sse(
+                    {
+                        "type": "done",
+                        "answer": full_answer,
+                        "cached": False,
+                        "model": None,
+                        "direct": True,
+                        "session": final_session,
+                    }
+                )
+            except LLMError as exc:
+                metrics["llm_errors"] += 1
+                yield _sse({"type": "error", "detail": str(exc)})
+
+        return StreamingResponse(direct_gen(), media_type="text/event-stream")
+
     if ctx["missing"]:
         missing = ctx["missing"]
         if session_info is not None:
@@ -1214,12 +1460,18 @@ async def query_stream(req: QueryRequest) -> StreamingResponse:
         cached = False
         model = None
         try:
+            extra_context = None
+            if req.web:
+                extra_context = direct_mode._format_web(
+                    await direct_mode.web_search_async(req.question)
+                )
             async for ev in engine.stream_query(
                 req.question,
                 top_k=req.top_k,
                 where=ctx["where"],
                 history=ctx["history"],
                 summary=ctx["summary"],
+                extra_context=extra_context,
             ):
                 if ev["type"] == "meta":
                     cached = ev["cached"]
@@ -1410,14 +1662,25 @@ def list_glossary(
     source: str | None = None,
     verified: bool | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> dict:
     settings: Settings = app.state.settings
     query_term = q or search
     return {
         "status": "ok",
         "terms": db.list_glossary(
-            settings.db_path, search=query_term, source=source, verified=verified, limit=limit
+            settings.db_path,
+            search=query_term,
+            source=source,
+            verified=verified,
+            limit=limit,
+            offset=offset,
         ),
+        "total": db.count_glossary(
+            settings.db_path, search=query_term, source=source, verified=verified
+        ),
+        "offset": max(0, offset),
+        "limit": max(1, limit),
     }
 
 
@@ -1551,9 +1814,15 @@ def create_session() -> dict:
 
 
 @app.get("/sessions/list")
-def list_sessions() -> dict:
+def list_sessions(offset: int = 0, limit: int = 0) -> dict:
     settings: Settings = app.state.settings
-    return {"status": "ok", "sessions": db.list_sessions(settings.db_path)}
+    return {
+        "status": "ok",
+        "sessions": db.list_sessions(settings.db_path, offset=offset, limit=limit),
+        "total": db.count_sessions(settings.db_path),
+        "offset": max(0, offset),
+        "limit": max(0, limit),
+    }
 
 
 @app.get("/sessions/{session_id}/messages")
@@ -1584,14 +1853,17 @@ def delete_session(session_id: str) -> dict:
 
 
 @app.get("/documents")
-def documents() -> dict:
+def documents(offset: int = 0, limit: int = 0) -> dict:
     store: VectorStore = app.state.store
     settings: Settings = app.state.settings
     cats = db.list_document_categories(settings.db_path)
     docs = store.list_documents()
     for d in docs:
         d["category"] = cats.get(d["source"], "Umum")
-    return {"status": "ok", "documents": docs}
+    total = len(docs)
+    if limit and limit > 0:
+        docs = docs[max(0, offset) : max(0, offset) + limit]
+    return {"status": "ok", "documents": docs, "total": total, "offset": max(0, offset), "limit": max(0, limit)}
 
 
 @app.get("/categories")
@@ -1664,6 +1936,14 @@ def delete_document(source: str, purge: bool = False) -> dict:
     # Bersihkan dari registry DB dan kategori
     db.delete_document_category_mapping(settings.db_path, source)
     db.purge_document(settings.db_path, source)
+
+    # Hapus anotasi orphan milik chunk dokumen ini (source#chunk_index)
+    try:
+        deleted_notes = annotations.delete_for_source(settings.db_path, source)
+        if deleted_notes:
+            logger.info("delete_document: %d anotasi ikut terhapus", deleted_notes)
+    except Exception as exc:
+        logger.warning("delete_document: gagal bersihkan anotasi: %s", exc)
 
     return {"status": "ok", "source": source, "removed": removed, "purged": True}
 
@@ -1836,7 +2116,11 @@ def learning_quiz_generate(req: QuizGenerateRequest) -> dict:
     settings: Settings = app.state.settings
     try:
         questions = learning.generate_quiz(
-            engine, source=req.source, n=req.n, topic=req.topic
+            engine,
+            source=req.source,
+            n=req.n,
+            topic=req.topic,
+            db_path=settings.db_path,
         )
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from None
@@ -1888,11 +2172,14 @@ def learning_quiz_grade(req: QuizGradeRequest) -> dict:
 
 @app.get("/learning/quiz/history")
 @app.get("/api/learning/quiz/history")
-def learning_quiz_history(limit: int = 20) -> dict:
+def learning_quiz_history(limit: int = 20, offset: int = 0) -> dict:
     settings: Settings = app.state.settings
     return {
         "status": "ok",
-        "history": learning.quiz_history(settings.db_path, limit=limit),
+        "history": learning.quiz_history(
+            settings.db_path, limit=limit, offset=offset
+        ),
+        "total": learning.count_quiz_history(settings.db_path),
     }
 
 

@@ -15,6 +15,7 @@ const Flashcards = lazy(() => import('./pages/Flashcards'))
 const Progress = lazy(() => import('./pages/Progress'))
 const Settings = lazy(() => import('./pages/Settings'))
 const Glossary = lazy(() => import('./pages/Glossary'))
+const Annotations = lazy(() => import('./pages/Annotations'))
 
 function Fallback() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
                 <Route path="/progress" element={<Progress />} />
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/glossary" element={<Glossary />} />
+                <Route path="/annotations" element={<Annotations />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

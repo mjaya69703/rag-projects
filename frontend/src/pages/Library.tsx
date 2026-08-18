@@ -15,7 +15,8 @@ import {
   StatCard,
 } from '../shared/components'
 import { useToast } from '../shared/hooks'
-import { documentService } from '../shared/services'
+import { annotationsService } from '../shared/services/annotationsService'
+import { documentService, glossaryService } from '../shared/services'
 import type { DocumentInfo } from '../shared/types'
 
 function getFileBadge(source: string) {
@@ -49,6 +50,7 @@ export default function Library() {
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [isDragOver, setIsDragOver] = useState(false)
+  const [uploadCategory, setUploadCategory] = useState('Umum')
 
   // URL Ingest Modal
   const [isUrlModalOpen, setIsUrlModalOpen] = useState(false)
@@ -59,6 +61,22 @@ export default function Library() {
   // Edit Category Modal
   const [isEditCategoryOpen, setIsEditCategoryOpen] = useState(false)
   const [targetDoc, setTargetDoc] = useState<DocumentInfo | null>(null)
+
+  // Locations ("Where is X covered?")
+  const [isLocationsOpen, setIsLocationsOpen] = useState(false)
+  const [locQuery, setLocQuery] = useState('')
+  const [locations, setLocations] = useState<any[]>([])
+  const [locLoading, setLocLoading] = useState(false)
+
+  // Document Summary
+  const [summaryDoc, setSummaryDoc] = useState<DocumentInfo | null>(null)
+  const [summaryText, setSummaryText] = useState('')
+  const [summaryLoading, setSummaryLoading] = useState(false)
+
+  // Document Note (annotasi)
+  const [noteDoc, setNoteDoc] = useState<DocumentInfo | null>(null)
+  const [noteText, setNoteText] = useState('')
+  const [savingNote, setSavingNote] = useState(false)
 
   // Delete Confirm Modal
   const [deleteDoc, setDeleteDoc] = useState<DocumentInfo | null>(null)
@@ -102,7 +120,7 @@ export default function Library() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i]
       try {
-        await documentService.uploadFile(file, file.name, 'Umum')
+        await documentService.uploadFile(file, file.name, uploadCategory.trim() || 'Umum')
         successCount++
       } catch (err: any) {
         addToast(`Gagal mengunggah ${file.name}: ${err.message}`, 'error')
@@ -148,6 +166,49 @@ export default function Library() {
     }
   }
 
+  const handleSearchLocations = async () => {
+    if (!locQuery.trim()) return
+    setLocLoading(true)
+    try {
+      const res = await documentService.getLocations(locQuery.trim())
+      setLocations(res.locations || [])
+    } catch (err: any) {
+      addToast(err.message || 'Gagal mencari lokasi topik.', 'error')
+    } finally {
+      setLocLoading(false)
+    }
+  }
+
+  const handleOpenSummary = async (doc: DocumentInfo) => {
+    setSummaryDoc(doc)
+    setSummaryText('')
+    setSummaryLoading(true)
+    try {
+      const res = await glossaryService.getDocumentSummary(doc.source)
+      setSummaryText(res.summary || '')
+    } catch (err: any) {
+      addToast(err.message || 'Gagal membuat ringkasan dokumen.', 'error')
+      setSummaryText('')
+    } finally {
+      setSummaryLoading(false)
+    }
+  }
+
+  const handleSaveNote = async () => {
+    if (!noteDoc) return
+    setSavingNote(true)
+    try {
+      await annotationsService.upsertNote(`${noteDoc.source}#0`, noteText)
+      addToast('Catatan tersimpan. Lihat di menu Catatan Anotasi.', 'success')
+      setNoteDoc(null)
+      setNoteText('')
+    } catch (err: any) {
+      addToast(err.message || 'Gagal menyimpan catatan.', 'error')
+    } finally {
+      setSavingNote(false)
+    }
+  }
+
   const uniqueCategories = ['all', ...Array.from(new Set(documents.map((d) => d.category || 'Umum')))]
 
   const filteredDocs = documents.filter((doc) => {
@@ -165,7 +226,14 @@ export default function Library() {
         title="Knowledge Library"
         subtitle="Pusat repositori materi pengetahuan yang terindeks dalam ChromaDB Vector Store."
         actions={
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <Button
+              variant="secondary"
+              icon="search"
+              onClick={() => setIsLocationsOpen(true)}
+            >
+              Cari Lokasi Topik
+            </Button>
             <Button
               variant="secondary"
               icon="link"
@@ -258,6 +326,21 @@ export default function Library() {
         </div>
       </div>
 
+      {/* Upload Category */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 220px', maxWidth: '360px' }}>
+          <Input
+            label="Kategori untuk file yang diunggah"
+            placeholder="Contoh: Python, Network, Tutorial..."
+            value={uploadCategory}
+            onChange={(e) => setUploadCategory(e.target.value)}
+          />
+        </div>
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+          Kategori ini diterapkan ke semua file pada upload berikutnya.
+        </span>
+      </div>
+
       {/* Filter and Search Bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
         <div style={{ display: 'flex', gap: '0.4rem', overflowX: 'auto', maxWidth: '100%', paddingBottom: '0.25rem' }}>
@@ -346,7 +429,7 @@ export default function Library() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.35rem', marginBottom: '0.65rem' }}>
                   <button
                     type="button"
-                    onClick={() => navigate('/quiz')}
+                    onClick={() => navigate(`/quiz?source=${encodeURIComponent(doc.source)}`)}
                     style={{
                       padding: '0.3rem 0.4rem',
                       background: 'var(--bg-surface-raised)',
@@ -368,7 +451,7 @@ export default function Library() {
 
                   <button
                     type="button"
-                    onClick={() => navigate('/flashcards')}
+                    onClick={() => navigate(`/flashcards?source=${encodeURIComponent(doc.source)}`)}
                     style={{
                       padding: '0.3rem 0.4rem',
                       background: 'var(--bg-surface-raised)',
@@ -390,7 +473,7 @@ export default function Library() {
 
                   <button
                     type="button"
-                    onClick={() => navigate('/glossary')}
+                    onClick={() => navigate(`/glossary?source=${encodeURIComponent(doc.source)}`)}
                     style={{
                       padding: '0.3rem 0.4rem',
                       background: 'var(--bg-surface-raised)',
@@ -411,15 +494,37 @@ export default function Library() {
                   </button>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', paddingTop: '0.65rem' }}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="chat"
-                    onClick={() => navigate('/')}
-                  >
-                    Tanya AI
-                  </Button>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', paddingTop: '0.65rem', flexWrap: 'wrap', gap: '0.35rem' }}>
+                  <div style={{ display: 'flex', gap: '0.35rem' }}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="chat"
+                      onClick={() => navigate(`/?source=${encodeURIComponent(doc.source)}`)}
+                    >
+                      Tanya AI
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="sparkles"
+                      onClick={() => handleOpenSummary(doc)}
+                    >
+                      Ringkas
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="note"
+                      title="Tulis catatan pribadi untuk dokumen ini (muncul di menu Catatan Anotasi)"
+                      onClick={() => {
+                        setNoteDoc(doc)
+                        setNoteText('')
+                      }}
+                    >
+                      Catatan
+                    </Button>
+                  </div>
 
                   <div style={{ display: 'flex', gap: '0.35rem' }}>
                     <Button
@@ -510,6 +615,147 @@ export default function Library() {
         onConfirm={handleDeleteDocument}
         onCancel={() => setDeleteDoc(null)}
       />
+
+      {/* Locations Modal */}
+      <Modal
+        isOpen={isLocationsOpen}
+        onClose={() => setIsLocationsOpen(false)}
+        title="Peta Lokasi Topik"
+        subtitle='Temukan "di mana" suatu topik dibahas di seluruh dokumen terindeks.'
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setIsLocationsOpen(false)}>
+              Tutup
+            </Button>
+            <Button variant="primary" icon="search" onClick={handleSearchLocations} loading={locLoading}>
+              Cari Lokasi
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <Input
+            label="Topik yang Dicari"
+            placeholder="Contoh: VLAN, subnetting, OSPF..."
+            value={locQuery}
+            onChange={(e) => setLocQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSearchLocations()
+            }}
+            autoFocus
+          />
+
+          {locLoading ? (
+            <div style={{ padding: '1.5rem', display: 'flex', justifyContent: 'center' }}>
+              <Spinner size="md" text="Mencari lokasi topik..." />
+            </div>
+          ) : locations.length === 0 ? (
+            !locQuery.trim() ? (
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                Ketik topik lalu tekan Cari untuk melihat lokasi pembahasan di dokumen Anda.
+              </p>
+            ) : (
+              <EmptyState
+                icon="search"
+                title="Tidak Ditemukan"
+                description="Tidak ada chunk yang cocok dengan topik yang dicari."
+              />
+            )
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '320px', overflowY: 'auto' }}>
+              {locations.map((loc, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    padding: '0.7rem 0.9rem',
+                    background: 'var(--bg-surface-raised)',
+                    borderRadius: 'var(--radius-md)',
+                    borderLeft: '3px solid var(--accent)',
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: '600', fontSize: '0.85rem', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={loc.source}>
+                      {loc.source}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      Halaman {loc.page} {loc.heading ? `• ${loc.heading}` : ''}
+                    </div>
+                  </div>
+                  <Badge variant="primary" size="sm">{loc.count} chunk</Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {/* Document Summary Modal */}
+      <Modal
+        isOpen={!!summaryDoc}
+        onClose={() => setSummaryDoc(null)}
+        title={`Ringkasan: ${summaryDoc?.source || ''}`}
+        subtitle="Ringkasan otomatis dokumen yang dihasilkan AI."
+        maxWidth="lg"
+        footer={
+          <Button variant="ghost" onClick={() => setSummaryDoc(null)}>
+            Tutup
+          </Button>
+        }
+      >
+        {summaryLoading ? (
+          <div style={{ padding: '2rem', display: 'flex', justifyContent: 'center' }}>
+            <Spinner size="md" text="AI sedang merangkum dokumen..." />
+          </div>
+        ) : summaryText ? (
+          <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: '1.7', whiteSpace: 'pre-wrap' }}>
+            {summaryText}
+          </p>
+        ) : (
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            Tidak ada ringkasan yang bisa dibuat untuk dokumen ini.
+          </p>
+        )}
+      </Modal>
+
+      {/* Document Note Modal */}
+      <Modal
+        isOpen={!!noteDoc}
+        onClose={() => setNoteDoc(null)}
+        title={`Catatan: ${noteDoc?.source || ''}`}
+        subtitle="Catatan pribadi untuk dokumen ini. Tersimpan di menu Catatan Anotasi dan muncul saat potongan terkait terbawa ke jawaban RAG."
+        maxWidth="md"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setNoteDoc(null)}>
+              Batal
+            </Button>
+            <Button variant="primary" icon="check" onClick={handleSaveNote} loading={savingNote}>
+              Simpan Catatan
+            </Button>
+          </>
+        }
+      >
+        <textarea
+          rows={5}
+          value={noteText}
+          onChange={(e) => setNoteText(e.target.value)}
+          placeholder="Tulis catatan pribadi Anda di sini..."
+          style={{
+            width: '100%',
+            resize: 'vertical',
+            background: 'var(--bg-surface-raised)',
+            border: '1px solid var(--border-default)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '0.6rem 0.75rem',
+            fontSize: '0.85rem',
+            color: 'var(--text-primary)',
+          }}
+        />
+      </Modal>
     </div>
   )
 }

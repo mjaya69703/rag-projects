@@ -20,6 +20,8 @@ def _now() -> str:
 def _conn(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")  # tunggu lock hingga 10 dtk
+    conn.execute("PRAGMA journal_mode = WAL")  # baca-tulis paralel & anti korupsi
     conn.execute("PRAGMA foreign_keys = ON")  # aktifkan ON DELETE CASCADE
     return conn
 
@@ -118,6 +120,7 @@ def list_glossary(
     source: str | None = None,
     verified: bool | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[dict]:
     """Daftar istilah dengan pencarian term/definisi yang case-insensitive."""
     clauses: list[str] = []
@@ -134,13 +137,38 @@ def list_glossary(
         params.append(int(verified))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(max(1, min(limit, 200)))
+    params.append(max(0, offset))
     with _conn(db_path) as conn:
         rows = conn.execute(
             f"SELECT id, term, definition, source, page, category, verified, created_at, updated_at "
-            f"FROM glossary_terms {where} ORDER BY term COLLATE NOCASE ASC LIMIT ?",
+            f"FROM glossary_terms {where} ORDER BY term COLLATE NOCASE ASC LIMIT ? OFFSET ?",
             params,
         ).fetchall()
     return [{**dict(row), "verified": bool(row["verified"])} for row in rows]
+
+
+def count_glossary(
+    db_path: str | Path,
+    search: str = "",
+    source: str | None = None,
+    verified: bool | None = None,
+) -> int:
+    clauses: list[str] = []
+    params: list[object] = []
+    if search.strip():
+        like = f"%{search.strip()}%"
+        clauses.append("(term LIKE ? OR definition LIKE ?)")
+        params.extend([like, like])
+    if source:
+        clauses.append("source = ?")
+        params.append(source)
+    if verified is not None:
+        clauses.append("verified = ?")
+        params.append(int(verified))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _conn(db_path) as conn:
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM glossary_terms {where}", params).fetchone()
+    return int(row["c"])
 
 
 def create_glossary_term(
@@ -207,19 +235,37 @@ def create_session(db_path: str | Path, title: str = "New Chat") -> dict:
     now = _now()
     with _conn(db_path) as conn:
         conn.execute(
-            "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO sessions (id, title, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?)",
             (session_id, title, now, now),
         )
-    return {"id": session_id, "title": title, "created_at": now, "updated_at": now}
+    return {
+        "id": session_id,
+        "title": title,
+        "created_at": now,
+        "updated_at": now,
+    }
 
 
-def list_sessions(db_path: str | Path) -> list[dict]:
+def list_sessions(db_path: str | Path, offset: int = 0, limit: int = 0) -> list[dict]:
+    limit_clause = ""
+    params: list[object] = []
+    if limit and limit > 0:
+        limit_clause = " LIMIT ? OFFSET ?"
+        params.extend([limit, max(0, offset)])
     with _conn(db_path) as conn:
         rows = conn.execute(
-            "SELECT id, title, created_at, updated_at FROM sessions "
-            "ORDER BY updated_at DESC"
+            f"SELECT id, title, created_at, updated_at FROM sessions "
+            f"ORDER BY updated_at DESC{limit_clause}",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_sessions(db_path: str | Path) -> int:
+    with _conn(db_path) as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()
+    return int(row["c"])
 
 
 def get_session(db_path: str | Path, session_id: str) -> dict | None:
@@ -502,14 +548,20 @@ def record_audit(
         pass  # audit gagal tidak boleh menjatuhkan request
 
 
-def list_audit(db_path: str | Path, limit: int = 50) -> list[dict]:
+def list_audit(db_path: str | Path, limit: int = 50, offset: int = 0) -> list[dict]:
     with _conn(db_path) as conn:
         rows = conn.execute(
             "SELECT id, ts, actor, action, ip, status, duration_ms "
-            "FROM audit_log ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "FROM audit_log ORDER BY id DESC LIMIT ? OFFSET ?",
+            (max(1, limit), max(0, offset)),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_audit(db_path: str | Path) -> int:
+    with _conn(db_path) as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()
+    return int(row["c"])
 
 
 # ----------------------------------------------------------------------
@@ -671,10 +723,3 @@ def clear_all_user_data(db_path: str | Path) -> dict:
                 cur = conn.execute(f"DELETE FROM {t}")
                 deleted[t] = cur.rowcount
     return deleted
-
-
-def clear_semantic_cache_entries(db_path: str | Path) -> int:
-    """Kosongkan tabel cache jika ada (backend ChromaDB, bukan SQLite)."""
-    # Cache semantic tinggal di ChromaDB (collection query_cache), bukan
-    # SQLite — fungsi ini placeholder agar pemanggil tidak bergantung tabel.
-    return 0

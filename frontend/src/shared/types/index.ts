@@ -160,12 +160,8 @@ export interface DocumentProgress {
 }
 
 export interface AnnotationItem {
-  id: string
-  source: string
-  chunk_id: string
-  page?: number | null
-  text: string
-  tags: string[]
+  chunk_key: string
+  note: string
   created_at: string
   updated_at: string
 }

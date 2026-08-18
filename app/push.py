@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 def _conn(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(PUSH_SCHEMA)
     return conn
 

@@ -5,6 +5,8 @@ import type { DocumentInfo, Message, Session } from '../shared/types'
 interface StreamOptions {
   source?: string
   mode?: 'sliding' | 'summary'
+  direct?: boolean
+  web?: boolean
 }
 
 interface SessionsContextValue {
@@ -121,6 +123,8 @@ export function SessionsProvider({ children }: { children: ReactNode }) {
           session_id: currentSessionId,
           source: options?.source || null,
           mode: options?.mode || 'sliding',
+          direct: options?.direct ?? false,
+          web: options?.web ?? false,
         }),
       })
 

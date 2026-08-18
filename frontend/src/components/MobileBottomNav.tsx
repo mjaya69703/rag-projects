@@ -32,7 +32,7 @@ export function MobileBottomNav({ onOpenMenu, isMenuOpen }: MobileBottomNavProps
   ]
 
   // Check if current route is one of the secondary pages accessed via menu
-  const isSecondaryActive = ['/progress', '/glossary', '/settings'].some((p) =>
+  const isSecondaryActive = ['/progress', '/glossary', '/settings', '/annotations'].some((p) =>
     location.pathname.startsWith(p)
   )
 

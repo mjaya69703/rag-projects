@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Badge,
   Button,
@@ -21,13 +22,19 @@ import type { AIFlashcard, CardStats, DocumentInfo, Flashcard, ReviewCard } from
 
 export default function Flashcards() {
   const { addToast } = useToast()
-  const [mode, setMode] = useState<'due' | 'deck' | 'heading'>('due')
+  const [searchParams] = useSearchParams()
+  const [mode, setMode] = useState<'due' | 'deck' | 'heading'>(() =>
+    searchParams.get('mode') === 'deck' || searchParams.get('mode') === 'heading'
+      ? (searchParams.get('mode') as any)
+      : 'due'
+  )
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
-  const [selectedDoc, setSelectedDoc] = useState<string>('')
+  const [selectedDoc, setSelectedDoc] = useState<string>(() => searchParams.get('source') || '')
 
   // SM-2 Review State
   const [dueCards, setDueCards] = useState<ReviewCard[]>([])
   const [deckCards, setDeckCards] = useState<ReviewCard[]>([])
+  const [deckLimit, setDeckLimit] = useState(100)
   const [cardStats, setCardStats] = useState<CardStats>({ total: 0, due_today: 0, avg_lapses: 0 })
   const [currentIndex, setCurrentIndex] = useState(0)
   const [isFlipped, setIsFlipped] = useState(false)
@@ -94,10 +101,10 @@ export default function Flashcards() {
     }
   }
 
-  const loadDeckCards = async (doc?: string) => {
+  const loadDeckCards = async (doc?: string, limit = deckLimit) => {
     setLoading(true)
     try {
-      const res = await learningService.listCards(doc || null, 100)
+      const res = await learningService.listCards(doc || null, limit)
       setDeckCards(res.cards || [])
       setCardStats(res.stats || { total: 0, due_today: 0, avg_lapses: 0 })
     } catch (err: any) {
@@ -105,6 +112,12 @@ export default function Flashcards() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleLoadMoreDeck = async () => {
+    const next = deckLimit + 100
+    setDeckLimit(next)
+    await loadDeckCards(selectedDoc, next)
   }
 
   const loadChunkCards = async (doc?: string) => {
@@ -140,6 +153,49 @@ export default function Flashcards() {
       }
     } catch (err: any) {
       addToast(err.message || 'Gagal mencatat respon review.', 'error')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleRatingExplore = async (rating: number) => {
+    const card = activeCards[currentIndex]
+    if (!card || !('heading' in card)) return
+
+    setSubmitting(true)
+    try {
+      const question = card.heading
+      const answer = card.content
+      const source = (card as any).source || selectedDoc || null
+
+      let cardId: string | null = null
+      const existing = deckCards.find(
+        (d) => d.question.trim().toLowerCase() === question.trim().toLowerCase()
+      )
+      if (existing) {
+        cardId = existing.card_id
+      } else {
+        const created = await learningService.createCustomCard(question, answer, source)
+        cardId = (created as any).card?.card_id || (created as any).card_id
+        if (cardId) {
+          loadDeckCards(selectedDoc)
+        }
+      }
+
+      if (cardId) {
+        await learningService.answerCard(cardId, rating)
+        const labels = ['', 'Kartu baru dibuat & ditandai lupa', 'Kartu baru dibuat & ditandai ragu', 'Kartu baru dibuat & dijadwalkan SM-2', 'Kartu baru dibuat & dijadwalkan SM-2!']
+        addToast(labels[rating] || 'Hasil eksplorasi dicatat ke dek review!', rating >= 3 ? 'success' : 'warning')
+      }
+
+      if (currentIndex < activeCards.length - 1) {
+        setCurrentIndex((prev) => prev + 1)
+        setIsFlipped(false)
+      } else {
+        loadChunkCards(selectedDoc)
+      }
+    } catch (err: any) {
+      addToast(err.message || 'Gagal mencatat hasil eksplorasi.', 'error')
     } finally {
       setSubmitting(false)
     }
@@ -287,6 +343,7 @@ export default function Flashcards() {
             />
           </Card>
         ) : (
+          <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.25rem' }}>
             {deckCards.map((card) => (
               <Card key={card.card_id} padding="md" hover>
@@ -326,8 +383,16 @@ export default function Flashcards() {
               </Card>
             ))}
           </div>
-        )
-      ) : activeCards.length === 0 ? (
+          {deckCards.length >= deckLimit && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginTop: '0.5rem' }}>
+              <Button variant="ghost" size="sm" icon="chevronDown" onClick={handleLoadMoreDeck}>
+                Muat Kartu Lainnya
+              </Button>
+            </div>
+          )}
+        </>
+        ))
+      : activeCards.length === 0 ? (
         /* Empty State for Review */
         <Card>
           <EmptyState
@@ -462,15 +527,15 @@ export default function Flashcards() {
             </div>
           </div>
 
-          {/* SM-2 Rating Controls (Visible when flipped in Due mode) */}
-          {mode === 'due' && (
+          {/* SM-2 Rating Controls (Visible when flipped in Due/Heading mode) */}
+          {(mode === 'due' || mode === 'heading') && (
             <div className="flashcard-rating-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.5rem', animation: 'fadeIn 0.2s ease-out' }}>
               <Button
                 variant="danger"
                 size="md"
                 icon="x"
                 className="btn--stack"
-                onClick={() => handleRatingAnswer(1)}
+                onClick={() => (mode === 'due' ? handleRatingAnswer(1) : handleRatingExplore(1))}
                 loading={submitting}
               >
                 <span>Lupa</span>
@@ -482,7 +547,7 @@ export default function Flashcards() {
                 size="md"
                 icon="alert"
                 className="btn--stack"
-                onClick={() => handleRatingAnswer(2)}
+                onClick={() => (mode === 'due' ? handleRatingAnswer(2) : handleRatingExplore(2))}
                 loading={submitting}
               >
                 <span>Ragu</span>
@@ -494,7 +559,7 @@ export default function Flashcards() {
                 size="md"
                 icon="check"
                 className="btn--stack"
-                onClick={() => handleRatingAnswer(3)}
+                onClick={() => (mode === 'due' ? handleRatingAnswer(3) : handleRatingExplore(3))}
                 loading={submitting}
               >
                 <span>Ingat</span>
@@ -506,7 +571,7 @@ export default function Flashcards() {
                 size="md"
                 icon="award"
                 className="btn--stack"
-                onClick={() => handleRatingAnswer(4)}
+                onClick={() => (mode === 'due' ? handleRatingAnswer(4) : handleRatingExplore(4))}
                 loading={submitting}
               >
                 <span>Sangat Paham</span>

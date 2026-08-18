@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   EmptyState,
   Icon,
   Input,
@@ -42,7 +43,7 @@ export default function Quiz() {
   const [searchParams] = useSearchParams()
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
   const [history, setHistory] = useState<QuizScoreItem[]>([])
-  const [selectedDoc, setSelectedDoc] = useState<string>('')
+  const [selectedDoc, setSelectedDoc] = useState<string>(() => searchParams.get('source') || '')
   const [questionCount, setQuestionCount] = useState<number>(5)
   const [quizTopic, setQuizTopic] = useState<string>(() => searchParams.get('topic') || '')
   const [activeTab, setActiveTab] = useState<'play' | 'history'>('play')
@@ -58,17 +59,24 @@ export default function Quiz() {
   // History Review State
   const [reviewing, setReviewing] = useState<QuizAttemptDetail | null>(null)
   const [reviewLoadingId, setReviewLoadingId] = useState<string | null>(null)
+  const [historyTotal, setHistoryTotal] = useState(0)
+  const [historyPage, setHistoryPage] = useState(0)
+  const HISTORY_PAGE_SIZE = 10
 
   // Generate Modal
   const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false)
+
+  // Submit-with-unanswered confirm dialog
+  const [isSubmitDialogOpen, setIsSubmitDialogOpen] = useState(false)
 
   useEffect(() => {
     loadInitialData()
   }, [])
 
-  // Datang dari Progress (weak-spot) dengan ?topic= → langsung siapkan kuis
+  // Datang dari Progress (weak-spot) dengan ?topic= atau dari Library ?source=
+  // → langsung siapkan modal kuis dengan preseleksi.
   useEffect(() => {
-    if (searchParams.get('topic')) {
+    if (searchParams.get('topic') || searchParams.get('source')) {
       setIsGenerateModalOpen(true)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -84,22 +92,35 @@ export default function Quiz() {
     try {
       const [docsRes, histRes] = await Promise.all([
         documentService.listDocuments(),
-        learningService.getQuizHistory(20),
+        learningService.getQuizHistory(HISTORY_PAGE_SIZE, 0),
       ])
       setDocuments(docsRes.documents || [])
       setHistory(histRes.history || [])
+      setHistoryTotal(histRes.total ?? 0)
     } catch {
       // ignore
     }
   }
 
-  const loadHistory = async () => {
+  const loadHistory = async (page = historyPage) => {
     try {
-      const histRes = await learningService.getQuizHistory(20)
+      const histRes = await learningService.getQuizHistory(
+        HISTORY_PAGE_SIZE,
+        page * HISTORY_PAGE_SIZE
+      )
       setHistory(histRes.history || [])
+      setHistoryTotal(histRes.total ?? 0)
     } catch {
       // ignore
     }
+  }
+
+  const historyPageCount = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE))
+
+  const gotoHistoryPage = (page: number) => {
+    if (page < 0 || page >= historyPageCount) return
+    setHistoryPage(page)
+    loadHistory(page)
   }
 
   const handleStartGenerate = async () => {
@@ -134,10 +155,15 @@ export default function Quiz() {
     if (!attempt) return
     const unanswered = userAnswers.some((a) => a === -1)
     if (unanswered) {
-      const confirm = window.confirm('Ada soal yang belum dijawab. Yakin ingin mengumpulkan?')
-      if (!confirm) return
+      setIsSubmitDialogOpen(true)
+      return
     }
+    await doSubmitQuiz()
+  }
 
+  const doSubmitQuiz = async () => {
+    if (!attempt) return
+    setIsSubmitDialogOpen(false)
     setGrading(true)
     try {
       const res = await learningService.gradeQuiz(attempt.attempt_id, userAnswers)
@@ -157,6 +183,27 @@ export default function Quiz() {
   const handleRetry = (source?: string | null) => {
     setSelectedDoc(source || '')
     setIsGenerateModalOpen(true)
+  }
+
+  const handleReplayAttempt = async (attemptId: string) => {
+    try {
+      const detail = await learningService.getQuizAttempt(attemptId)
+      setAttempt({
+        attempt_id: detail.attempt_id,
+        source: detail.source,
+        questions: detail.questions.map((q) => ({
+          question: q.question,
+          options: q.options,
+        })),
+      })
+      setUserAnswers(new Array(detail.questions.length).fill(-1))
+      setCurrentStep(0)
+      setResult(null)
+      setActiveTab('play')
+      addToast(`Kuis diulang dengan soal yang sama (${detail.questions.length} soal)!`, 'success')
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat ulang kuis.', 'error')
+    }
   }
 
   const handleReview = async (attemptId: string) => {
@@ -237,7 +284,7 @@ export default function Quiz() {
                 <div style={{ fontWeight: '700', color: 'var(--text-primary)' }}>{reviewing.source || 'Semua Dokumen'}</div>
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{formatDate(reviewing.created_at)} • {reviewing.questions.length} soal</div>
               </div>
-              <Button variant="primary" size="sm" icon="refresh" onClick={() => handleRetry(reviewing.source)}>
+              <Button variant="primary" size="sm" icon="refresh" onClick={() => handleReplayAttempt(reviewing.attempt_id)}>
                 Ulangi Kuis Ini
               </Button>
             </Card>
@@ -356,7 +403,12 @@ export default function Quiz() {
                           Pembahasan
                         </Button>
                       )}
-                      <Button variant="primary" size="sm" icon="refresh" onClick={() => handleRetry(h.source)}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon="refresh"
+                        onClick={() => (h.attempt_id ? handleReplayAttempt(h.attempt_id) : handleRetry(h.source))}
+                      >
                         Ulangi
                       </Button>
                     </div>
@@ -364,6 +416,39 @@ export default function Quiz() {
                 </Card>
               )
             })}
+            {historyPageCount > 1 && (
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.4rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon="chevron-left"
+                  disabled={historyPage === 0}
+                  onClick={() => gotoHistoryPage(historyPage - 1)}
+                >
+                  Sebelumnya
+                </Button>
+                {Array.from({ length: historyPageCount }, (_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => gotoHistoryPage(i)}
+                    className={`badge ${i === historyPage ? 'badge--primary' : 'badge--neutral'}`}
+                    style={{ cursor: 'pointer', fontSize: '0.78rem', padding: '0.3rem 0.65rem', minWidth: '2rem' }}
+                  >
+                    {i + 1}
+                  </button>
+                ))}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon="chevron-right"
+                  disabled={historyPage >= historyPageCount - 1}
+                  onClick={() => gotoHistoryPage(historyPage + 1)}
+                >
+                  Berikutnya
+                </Button>
+              </div>
+            )}
           </div>
         )
       ) : generating ? (
@@ -728,6 +813,18 @@ export default function Quiz() {
           </div>
         </div>
       </Modal>
+
+      {/* Submit-with-unanswered Confirm Dialog */}
+      <ConfirmDialog
+        isOpen={isSubmitDialogOpen}
+        title="Masih Ada Soal Belum Dijawab"
+        description="Ada soal yang belum dijawab. Yakin ingin mengumpulkan jawaban sekarang?"
+        confirmText="Ya, Kumpulkan"
+        variant="primary"
+        loading={grading}
+        onConfirm={doSubmitQuiz}
+        onCancel={() => setIsSubmitDialogOpen(false)}
+      />
     </div>
   )
 }

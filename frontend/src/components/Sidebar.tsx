@@ -16,6 +16,7 @@ const NAV_ITEMS: NavMenuItem[] = [
   { to: '/flashcards', label: '3D Flashcards', icon: 'cards' },
   { to: '/quiz', label: 'AI Quiz Arena', icon: 'quiz' },
   { to: '/glossary', label: 'Glosarium', icon: 'glossary' },
+  { to: '/annotations', label: 'Catatan Anotasi', icon: 'note' },
   { to: '/progress', label: 'Diagnostik & Progress', icon: 'progress' },
   { to: '/settings', label: 'Pengaturan', icon: 'settings' },
 ]

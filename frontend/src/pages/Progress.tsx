@@ -11,13 +11,41 @@ import {
   StatCard,
 } from '../shared/components'
 import { useToast } from '../shared/hooks'
-import { learningService, systemService } from '../shared/services'
-import type { CardStats, DocumentProgress, MasteryStat, RecommendationItem, RepeatedQuestionItem, SystemMetrics, WeakSpot } from '../shared/types'
+import { glossaryService, learningService, systemService } from '../shared/services'
+import type { CardStats, DocumentProgress, MasteryStat, MindmapNode, RecommendationItem, RepeatedQuestionItem, SystemMetrics, WeakSpot } from '../shared/types'
 
 function formatStorage(mb: number | undefined): string {
   if (!mb) return '0 MB'
   if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB'
   return mb.toFixed(0) + ' MB'
+}
+
+function MindmapTree({ node, depth = 0 }: { node: MindmapNode; depth?: number }) {
+  const hasChildren = node.children && node.children.length > 0
+  return (
+    <div style={{ marginLeft: depth === 0 ? 0 : '0.85rem', borderLeft: depth > 0 ? '1px solid var(--border-subtle)' : 'none', paddingLeft: depth > 0 ? '0.85rem' : 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.3rem 0' }}>
+        <Icon name="tag" size={14} style={{ color: depth === 0 ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }} />
+        <span
+          style={{
+            fontSize: depth === 0 ? '0.92rem' : '0.82rem',
+            fontWeight: depth === 0 ? '700' : '500',
+            color: depth === 0 ? 'var(--text-primary)' : 'var(--text-secondary)',
+            lineHeight: '1.4',
+          }}
+        >
+          {node.name}
+        </span>
+      </div>
+      {hasChildren && (
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {node.children.map((child, i) => (
+            <MindmapTree key={i} node={child} depth={depth + 1} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function Progress() {
@@ -30,6 +58,8 @@ export default function Progress() {
   const [cardStats, setCardStats] = useState<CardStats>({ total: 0, due_today: 0, avg_lapses: 0 })
   const [recommendations, setRecommendations] = useState<RecommendationItem[]>([])
   const [repeatedQuestions, setRepeatedQuestions] = useState<RepeatedQuestionItem[]>([])
+  const [mindmap, setMindmap] = useState<MindmapNode | null>(null)
+  const [mindmapLoading, setMindmapLoading] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -54,10 +84,23 @@ export default function Progress() {
       setRepeatedQuestions(repRes.questions || [])
       setRecommendations((recRes as any).recommendations || [])
       setCardStats((recRes as any).card_stats || { total: 0, due_today: 0, avg_lapses: 0 })
+      loadMindmap()
     } catch (err: any) {
       addToast(err.message || 'Gagal memuat analitik.', 'error')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadMindmap = async (silent = true) => {
+    setMindmapLoading(true)
+    try {
+      const res = await glossaryService.getMindmap(null)
+      setMindmap(res.mindmap || null)
+    } catch {
+      setMindmap(null)
+    } finally {
+      setMindmapLoading(false)
     }
   }
 
@@ -335,6 +378,67 @@ export default function Progress() {
               )}
             </Card>
           </div>
+        {/* Repeated Questions Thermometer */}
+          {repeatedQuestions.length > 0 && (
+            <Card padding="lg">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  Pertanyaan Berulang (7 Hari)
+                </h3>
+                <Badge variant="primary">Termometer Fokus</Badge>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {repeatedQuestions.slice(0, 10).map((rq, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                      padding: '0.85rem 1rem',
+                      background: 'var(--bg-surface-raised)',
+                      borderRadius: 'var(--radius-md)',
+                      borderLeft: '3px solid var(--accent)',
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: '600', fontSize: '0.88rem', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={rq.question}>
+                        {rq.question}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                        Terakhir: {new Date(rq.last_asked).toLocaleDateString('id-ID')}
+                      </div>
+                    </div>
+                    <Badge variant={rq.count >= 5 ? 'error' : rq.count >= 3 ? 'warning' : 'secondary'} size="sm">
+                      {rq.count}x ditanya
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Concept Mindmap */}
+          <Card padding="lg">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>
+                Peta Konsep Dokumen (Mindmap)
+              </h3>
+              <Button variant="ghost" size="sm" icon="refresh" onClick={() => loadMindmap(false)} loading={mindmapLoading}>
+                Muat Ulang
+              </Button>
+            </div>
+            {mindmap ? (
+              <MindmapTree node={mindmap} />
+            ) : (
+              <EmptyState
+                icon="mindmap"
+                title="Belum Ada Peta Konsep"
+                description="Mindmap dibangun dari heading dokumen yang terindeks di perpustakaan Anda."
+              />
+            )}
+          </Card>
         </>
       )}
     </div>

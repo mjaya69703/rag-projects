@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useSessions } from '../context/SessionsContext'
 import {
   Badge,
@@ -19,6 +20,7 @@ import type { DocumentInfo, Message, SourceRef } from '../shared/types'
 
 export default function Chat() {
   const { addToast } = useToast()
+  const [searchParams] = useSearchParams()
   const {
     sessions,
     activeId,
@@ -35,8 +37,10 @@ export default function Chat() {
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
-  const [selectedDoc, setSelectedDoc] = useState<string>('')
+  const [selectedDoc, setSelectedDoc] = useState<string>(() => searchParams.get('source') || '')
   const [chatMode, setChatMode] = useState<'sliding' | 'summary'>('sliding')
+  const [directMode, setDirectMode] = useState(false)
+  const [webMode, setWebMode] = useState(false)
 
   // Modals
   const [isRenameOpen, setIsRenameOpen] = useState(false)
@@ -75,6 +79,8 @@ export default function Chat() {
         await streamMessage(text, {
           source: selectedDoc || undefined,
           mode: chatMode,
+          direct: directMode,
+          web: webMode,
         })
       } else {
         await sendMessage(text)
@@ -334,6 +340,40 @@ export default function Chat() {
               }}
             >
               Mode: {chatMode === 'sliding' ? 'Sliding' : 'Summary'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setDirectMode(!directMode)}
+              title="Mode Langsung: baca isi dokumen utuh + pengetahuan AI (tanpa chunk). Pilih dokumen di atas untuk dibaca penuh."
+              style={{
+                background: directMode ? 'var(--color-accent)' : 'var(--bg-surface)',
+                border: '1px solid var(--border-default)',
+                color: directMode ? '#fff' : 'var(--text-secondary)',
+                fontSize: '0.78rem',
+                padding: '0.25rem 0.5rem',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+              }}
+            >
+              {directMode ? 'Mode Langsung: ON' : 'Mode Langsung: OFF'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setWebMode(!webMode)}
+              title="Akses Internet: ambil hasil pencarian web sebagai konteks jawaban."
+              style={{
+                background: webMode ? 'var(--color-accent)' : 'var(--bg-surface)',
+                border: '1px solid var(--border-default)',
+                color: webMode ? '#fff' : 'var(--text-secondary)',
+                fontSize: '0.78rem',
+                padding: '0.25rem 0.5rem',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+              }}
+            >
+              {webMode ? 'Internet: ON' : 'Internet: OFF'}
             </button>
           </div>
 

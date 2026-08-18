@@ -87,8 +87,12 @@ export const learningService = {
     })
   },
 
-  async getQuizHistory(limit = 20): Promise<{ status: string; history: QuizScoreItem[] }> {
-    return request(`/learning/quiz/history?limit=${limit}`)
+  async getQuizHistory(limit = 10, offset = 0): Promise<{
+    status: string
+    history: QuizScoreItem[]
+    total?: number
+  }> {
+    return request(`/learning/quiz/history?limit=${limit}&offset=${offset}`)
   },
 
   async getQuizAttempt(attemptId: string): Promise<{ status: string } & QuizAttemptDetail> {

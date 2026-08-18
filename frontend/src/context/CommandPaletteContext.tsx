@@ -155,6 +155,17 @@ export function CommandPaletteProvider({ children }: { children: ReactNode }) {
       },
     },
     {
+      id: 'nav-annotations',
+      title: 'Catatan Anotasi',
+      subtitle: 'Catatan pribadi pada chunk dokumen',
+      icon: 'note',
+      category: 'Navigasi Halaman',
+      action: () => {
+        navigate('/annotations')
+        setOpen(false)
+      },
+    },
+    {
       id: 'nav-settings',
       title: 'Pengaturan & Privasi',
       subtitle: 'Konfigurasi tema, API token, dan data wipe',

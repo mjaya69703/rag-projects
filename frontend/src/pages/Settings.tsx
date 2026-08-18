@@ -33,9 +33,26 @@ export default function Settings() {
   const [isCacheDialogOpen, setIsCacheDialogOpen] = useState(false)
   const [purging, setPurging] = useState(false)
 
+  // Audit Log
+  const [auditEntries, setAuditEntries] = useState<any[]>([])
+  const [auditLoading, setAuditLoading] = useState(false)
+
   useEffect(() => {
     loadPrivacyInfo()
   }, [])
+
+  const loadAuditLog = async () => {
+    setAuditLoading(true)
+    try {
+      const res = await systemService.getAuditLogs(100)
+      setAuditEntries(res.entries || [])
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat audit log. Pastikan token API diisi.', 'error')
+      setAuditEntries([])
+    } finally {
+      setAuditLoading(false)
+    }
+  }
 
   const loadPrivacyInfo = async () => {
     setLoading(true)
@@ -222,22 +239,22 @@ export default function Settings() {
 
               <div style={{ padding: '1rem 1.15rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
                 <div style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Sensor PII Otomatis</div>
-                <div style={{ fontWeight: '700', fontSize: '0.95rem', color: privacyInfo?.redaction_active ? 'var(--success)' : 'var(--warning)', marginTop: '0.25rem' }}>
-                  {privacyInfo?.redaction_active ? '🛡️ Aktif (Sensitif Disensor)' : '⚠️ Nonaktif'}
+                <div style={{ fontWeight: '700', fontSize: '0.95rem', color: privacyInfo?.redaction_enabled ? 'var(--success)' : 'var(--warning)', marginTop: '0.25rem' }}>
+                  {privacyInfo?.redaction_enabled ? '🛡️ Aktif (Sensitif Disensor)' : '⚠️ Nonaktif'}
                 </div>
               </div>
 
               <div style={{ padding: '1rem 1.15rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
                 <div style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>Retensi Sesi Chat</div>
                 <div style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)', marginTop: '0.25rem' }}>
-                  {privacyInfo?.retention_days ? `${privacyInfo.retention_days} Hari` : 'Tanpa Batas'}
+                  {privacyInfo?.retention?.chat_days ? `${privacyInfo.retention.chat_days} Hari` : 'Tanpa Batas'}
                 </div>
               </div>
 
               <div style={{ padding: '1rem 1.15rem', background: 'var(--bg-surface-raised)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
                 <div style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-muted)' }}>TTL Semantic Cache</div>
                 <div style={{ fontWeight: '700', fontSize: '0.95rem', color: 'var(--text-primary)', marginTop: '0.25rem' }}>
-                  {privacyInfo?.cache_max_days ? `${privacyInfo.cache_max_days} Hari` : 'Tanpa Batas'}
+                  {privacyInfo?.retention?.cache_max_days ? `${privacyInfo.retention.cache_max_days} Hari` : 'Tanpa Batas'}
                 </div>
               </div>
             </div>
@@ -316,6 +333,59 @@ export default function Settings() {
                 Aktifkan Notifikasi
               </Button>
             </div>
+          </div>
+        )}
+      </Card>
+
+            {/* Audit Log */}
+      <Card padding="lg">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-sm)', background: 'var(--accent-bg)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="shield" size={20} />
+            </div>
+            <div>
+              <h3 style={{ fontSize: '1.15rem', fontWeight: '700', color: 'var(--text-primary)' }}>Audit Log Aplikasi</h3>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Aksi terproteksi terbaru pada API (P0-02)</p>
+            </div>
+          </div>
+          <Button variant="secondary" size="sm" icon="refresh" onClick={loadAuditLog} loading={auditLoading}>
+            Muat Audit Log
+          </Button>
+        </div>
+
+        {auditEntries.length === 0 ? (
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            Belum ada entri audit dimuat. Klik "Muat Audit Log" (membutuhkan token API bila backend diproteksi).
+          </p>
+        ) : (
+          <div style={{ maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            {auditEntries.map((entry, idx) => (
+              <div
+                key={idx}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  padding: '0.55rem 0.8rem',
+                  background: 'var(--bg-surface-raised)',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.78rem',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ flex: 1, minWidth: '160px' }}>
+                  <span style={{ fontWeight: '700', color: 'var(--text-primary)' }}>{entry.action}</span>
+                  <span style={{ color: 'var(--text-muted)' }}> — {entry.actor}</span>
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <Badge variant={entry.status < 400 ? 'success' : 'error'} size="sm">{entry.status}</Badge>
+                  <span style={{ color: 'var(--text-muted)' }}>{entry.duration_ms?.toFixed(0)} ms</span>
+                  <span style={{ color: 'var(--text-muted)' }}>{new Date(entry.ts).toLocaleString('id-ID')}</span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </Card>

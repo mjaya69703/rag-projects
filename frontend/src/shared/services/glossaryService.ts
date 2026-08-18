@@ -5,12 +5,16 @@ export const glossaryService = {
   async listGlossary(
     search = '',
     source?: string | null,
-    verified?: boolean | null
-  ): Promise<{ status: string; terms: GlossaryTerm[] }> {
+    verified?: boolean | null,
+    limit = 100,
+    offset = 0
+  ): Promise<{ status: string; terms: GlossaryTerm[]; total?: number }> {
     const params = new URLSearchParams()
     if (search) params.set('search', search)
     if (source) params.set('source', source)
     if (verified !== undefined && verified !== null) params.set('verified', String(verified))
+    params.set('limit', String(limit))
+    if (offset) params.set('offset', String(offset))
     return request(`/glossary?${params.toString()}`)
   },
 

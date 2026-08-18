@@ -83,11 +83,11 @@ class LLMClient:
         if not self.model:
             raise LLMError("LLM_MODEL belum diisi di file .env")
 
-    def _payload(self, messages: list[dict], max_tokens: int, stream: bool = False) -> dict:
+    def _payload(self, messages: list[dict], max_tokens: int, stream: bool = False, temperature: float | None = None) -> dict:
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": self.temperature,
+            "temperature": self.temperature if temperature is None else temperature,
             "max_tokens": max_tokens,
         }
         if stream:
@@ -103,16 +103,11 @@ class LLMClient:
             return err.get("message") or str(err)
         return str(err)
 
-    def chat(self, messages: list[dict], max_tokens: int = 1024) -> LLMResponse:
-        """Kirim percakapan ke LLM API, kembalikan respons teks lengkap.
-
-        Retry otomatis (maks MAX_RETRIES kali) untuk error transient
-        (429/5xx/network/internal_error) supaya API yang flaky tidak
-        menggagalkan permintaan.
-        """
+    def chat(self, messages: list[dict], max_tokens: int = 1024, temperature: float | None = None) -> LLMResponse:
+        """Kirim percakapan ke LLM API, kembalikan respons teks lengkap."""
         self._validate()
         url = f"{self.base_url}/chat/completions"
-        payload = self._payload(messages, max_tokens)
+        payload = self._payload(messages, max_tokens, temperature=temperature)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -188,9 +183,7 @@ class LLMClient:
 
         raise last_error  # pragma: no cover - unreachable (loop selalu raise)
 
-    async def astream_chat(
-        self, messages: list[dict], max_tokens: int = 1024
-    ):
+    async def astream_chat(self, messages: list[dict], max_tokens: int = 1024, temperature: float | None = None):
         """Streaming jawaban LLM: async generator yang me-yield teks per chunk.
 
         Retry hanya dilakukan jika error terjadi SEBELUM delta pertama keluar
@@ -199,7 +192,7 @@ class LLMClient:
         """
         self._validate()
         url = f"{self.base_url}/chat/completions"
-        payload = self._payload(messages, max_tokens, stream=True)
+        payload = self._payload(messages, max_tokens, stream=True, temperature=temperature)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

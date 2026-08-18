@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   Badge,
   Button,
@@ -18,13 +19,17 @@ import type { DocumentInfo, GlossaryTerm } from '../shared/types'
 
 export default function Glossary() {
   const { addToast } = useToast()
+  const [searchParams] = useSearchParams()
   const [terms, setTerms] = useState<GlossaryTerm[]>([])
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [filterDoc, setFilterDoc] = useState('')
+  const [filterDoc, setFilterDoc] = useState<string>(() => searchParams.get('source') || '')
   const [filterVerified, setFilterVerified] = useState<string>('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
+  const [glossaryLimit, setGlossaryLimit] = useState(100)
+  const [glossaryOffset, setGlossaryOffset] = useState(0)
+  const [glossaryTotal, setGlossaryTotal] = useState<number | null>(null)
 
   // Add / Edit Modal
   const [isEditModalOpen, setIsEditModalOpen] = useState(false)
@@ -51,7 +56,9 @@ export default function Glossary() {
   const [extractError, setExtractError] = useState<string | null>(null)
 
   useEffect(() => {
-    loadGlossary()
+    setGlossaryOffset(0)
+    setGlossaryTotal(null)
+    loadGlossary(0)
     loadDocuments()
   }, [search, filterDoc, filterVerified])
 
@@ -64,18 +71,35 @@ export default function Glossary() {
     }
   }
 
-  const loadGlossary = async () => {
+  const loadGlossary = async (offset = 0) => {
     setLoading(true)
     try {
       const verifiedParam = filterVerified === 'true' ? true : filterVerified === 'false' ? false : null
-      const res = await glossaryService.listGlossary(search, filterDoc || null, verifiedParam)
+      const res = await glossaryService.listGlossary(search, filterDoc || null, verifiedParam, glossaryLimit, offset)
       setTerms(res.terms || [])
+      setGlossaryTotal(res.total ?? null)
     } catch (err: any) {
       addToast(err.message || 'Gagal memuat daftar glossary.', 'error')
     } finally {
       setLoading(false)
     }
   }
+
+  const handleLoadMoreGlossary = async () => {
+    const next = glossaryOffset + glossaryLimit
+    setGlossaryOffset(next)
+    try {
+      const verifiedParam = filterVerified === 'true' ? true : filterVerified === 'false' ? false : null
+      const res = await glossaryService.listGlossary(search, filterDoc || null, verifiedParam, glossaryLimit, next)
+      setTerms((prev) => [...prev, ...(res.terms || [])])
+      setGlossaryTotal(res.total ?? null)
+    } catch (err: any) {
+      addToast(err.message || 'Gagal memuat glossary lainnya.', 'error')
+    }
+  }
+
+  const hasMoreGlossary =
+    glossaryTotal === null ? terms.length >= glossaryLimit : terms.length < glossaryTotal
 
   const handleToggleVerify = async (item: GlossaryTerm) => {
     if (!item.id) return
@@ -423,6 +447,14 @@ export default function Glossary() {
               </div>
             </Card>
           ))}
+        </div>
+      )}
+
+      {hasMoreGlossary && (
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '0.5rem' }}>
+          <Button variant="ghost" size="sm" icon="chevronDown" onClick={handleLoadMoreGlossary}>
+            Muat Istilah Lainnya
+          </Button>
         </div>
       )}
 

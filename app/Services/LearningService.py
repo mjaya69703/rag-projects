@@ -208,13 +208,14 @@ class LearningService:
             return []
 
         material = "\n\n".join(
-            f"[{i + 1}] ({c['heading']})\n{c['text']}"
+            f"[{i + 1}] {c['text']}"
             for i, c in enumerate(chosen)
         )
         prompt = (
-            "Buat soal pilihan ganda berbahasa Indonesia berdasarkan materi "
-            "berikut. Keluarkan HANYA JSON array, tanpa teks lain. Format tiap "
-            'soal: {"question": "...", "options": ["a", "b", "c", "d"], '
+            "Buat soal pilihan ganda berbahasa Indonesia yang menguji pemahaman konsep teknis mendalam "
+            "berdasarkan materi berikut. DILARANG membuat pertanyaan meta seperti 'membahas apa'. "
+            "Keluarkan HANYA JSON array, tanpa teks lain. Format tiap "
+            'soal: {"question": "Pertanyaan konsep spesifik...", "options": ["a", "b", "c", "d"], '
             '"answer_index": 0} dengan answer_index 0-3 menunjuk jawaban benar '
             f"dari 4 opsi. Buat tepat {n} soal.\n\nMATERI:\n{material}"
         )
@@ -229,11 +230,10 @@ class LearningService:
         except Exception as exc:
             logger.warning("LLM quiz generation failed: %s", exc)
 
-        heading = chosen[0]["heading"]
         return [
             {
-                "question": f"Bagian '{heading}' membahas topik apa?",
-                "options": [heading, "Topik lain", "Tidak dibahas", "Tidak tahu"],
+                "question": f"Berdasarkan materi teknis di atas, manakah pernyataan yang BENAR?",
+                "options": [chosen[0]["text"][:120], "Tidak didukung oleh konfigurasi sistem.", "Hanya berlaku pada mode pengembangan.", "Pengaturan ini tidak direkomendasikan."],
                 "answer_index": 0,
             }
         ]

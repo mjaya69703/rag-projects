@@ -143,19 +143,33 @@ class SemanticCache:
 
     # ------------------------------------------------------------------
     def _evict_if_needed(self) -> None:
-        """Buang entri tertua jika cache melebihi batas max_size."""
-        if self.collection.count() < self.max_size:
+        """Buang entri tertua jika cache melebihi batas max_size.
+
+        Evict secara bulk (cukup banyak supaya count kembali di bawah
+        max_size), bukan satu-per-satu — kalau max_size diturunkan atau
+        collection sudah membengkak, satu eviction per put tidak pernah
+        menormalkan ukuran cache.
+        """
+        if self.max_size <= 0:
+            self.clear()
+            return
+        count = self.collection.count()
+        if count < self.max_size:
             return
         result = self.collection.get(include=["metadatas"])
         ids = result.get("ids") or []
         metadatas = result.get("metadatas") or []
         if not ids:
             return
-        oldest = min(
+        # Buang (count - max_size + 1) entri tertua supaya sisanya = max_size - 1,
+        # sehingga upsert berikutnya tidak melewati batas.
+        to_remove = count - self.max_size + 1
+        oldest_first = sorted(
             range(len(ids)),
             key=lambda i: metadatas[i].get("created_at", 0),
         )
-        self.collection.delete(ids=[ids[oldest]])
+        victims = [ids[i] for i in oldest_first[: max(1, to_remove)]]
+        self.collection.delete(ids=victims)
 
     @staticmethod
     def _cache_id(question: str, where: dict | None = None) -> str:
